@@ -36,6 +36,9 @@ const SCHEMA_SQL = [
     pair_key text primary key,
     created_at timestamptz not null default now()
   )`,
+  // Tell PostgREST to reload its schema cache so the tables are immediately
+  // accessible via the REST API (avoids PGRST204 "not in schema cache" errors).
+  `select pg_notify('pgrst', 'reload schema')`,
 ];
 
 /**
@@ -95,17 +98,22 @@ export async function POST(req: NextRequest) {
       void res; // We'll verify by selecting below instead.
     }
 
-    // Verify tables exist by selecting from each.
+    // Verify tables exist and are visible to PostgREST's schema cache.
+    // 42P01 = table does not exist in PostgreSQL.
+    // PGRST204 / "schema cache" = table exists but PostgREST hasn't cached it yet.
     const tables = ["pairs", "signals", "backtests", "blacklist"];
     const missing: string[] = [];
     for (const table of tables) {
       const { error } = await db.from(table).select("*").limit(1);
-      if (error?.code === "42P01") missing.push(table);
+      const notReady =
+        error?.code === "42P01" ||
+        error?.code === "PGRST204" ||
+        error?.message?.toLowerCase().includes("schema cache");
+      if (notReady) missing.push(table);
     }
 
     if (missing.length > 0) {
-      // Auto-create didn't work (expected on Supabase free tier via REST).
-      // Return the SQL for the user to run manually in Supabase SQL editor.
+      // Include pg_notify so running the SQL also refreshes PostgREST's cache.
       return NextResponse.json({
         ok: false,
         connected: true,
