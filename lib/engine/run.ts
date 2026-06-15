@@ -10,6 +10,7 @@ import { alertSignal, isAlertable } from "@/lib/alert/telegram";
 import type { Pair, Signal } from "@/lib/types";
 
 export interface ScanSummary {
+  rawUniverseSize: number;
   universeSize: number;
   alignedBars: number;
   pairsFound: number;
@@ -17,13 +18,19 @@ export interface ScanSummary {
   saved: boolean;
 }
 
+// Use a shorter lookback for scan so each symbol fits in a single OKX page
+// (300 max). 150 bars is plenty for ADF + Hurst and avoids pagination that
+// hammers rate limits when 30 symbols fire in parallel.
+const SCAN_LOOKBACK = 150;
+
 /**
  * Full pair-discovery scan: fetch liquid universe → aligned closes → discover →
  * persist. `maxCombos` bounds the work for serverless time limits.
  */
 export async function runScan(maxCombos?: number): Promise<ScanSummary> {
   const universe = await getLiquidUniverse(config.universeSize);
-  const matrix = await fetchAlignedCloses(universe);
+  const rawUniverseSize = universe.length;
+  const matrix = await fetchAlignedCloses(universe, config.timeframe, SCAN_LOOKBACK);
   const blacklist = new Set(await getBlacklist());
 
   const pairs = discoverPairs(matrix, { maxCombos }).filter(
@@ -39,6 +46,7 @@ export async function runScan(maxCombos?: number): Promise<ScanSummary> {
   }
 
   return {
+    rawUniverseSize,
     universeSize: matrix.symbols.length,
     alignedBars: matrix.timestamps.length,
     pairsFound: pairs.length,

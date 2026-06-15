@@ -53,9 +53,13 @@ export default function SetupPage() {
       if (!res.ok || !data.ok) {
         setScanResult(`❌ ${data.error ?? "Scan gagal"}`);
       } else {
-        setScanResult(
-          `✅ Scan selesai! Ditemukan ${data.pairsFound} pair dari ${data.universeSize} simbol (${data.alignedBars} bars).`,
-        );
+        const parts = [
+          `Universe: ${data.rawUniverseSize ?? data.universeSize} simbol`,
+          `berhasil fetch: ${data.universeSize}`,
+          `${data.alignedBars} bars`,
+          `${data.pairsFound} pair ditemukan`,
+        ];
+        setScanResult(`✅ Scan selesai! ${parts.join(" · ")}`);
       }
     } catch (e) {
       setScanResult(`❌ ${(e as Error).message}`);

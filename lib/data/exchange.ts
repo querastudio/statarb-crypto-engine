@@ -122,9 +122,13 @@ export interface PriceMatrix {
 }
 
 /**
- * Fetch and time-align close prices for several symbols in parallel.
- * Symbols that fail to fetch from ALL providers are silently dropped.
+ * Fetch and time-align close prices for several symbols.
+ * Symbols are processed in batches of BATCH_SIZE to stay within exchange rate
+ * limits (30 concurrent requests × paginated pages can trigger 429s on OKX).
+ * Symbols that fail to fetch from all providers are silently dropped.
  */
+const BATCH_SIZE = 5;
+
 export async function fetchAlignedCloses(
   symbols: string[],
   timeframe = config.timeframe,
@@ -133,21 +137,24 @@ export async function fetchAlignedCloses(
   const perSymbol = new Map<string, Map<number, number>>();
   const valid: string[] = [];
 
-  const results = await Promise.allSettled(
-    symbols.map(async (symbol) => {
-      const bars = await fetchOHLCV(symbol, timeframe, limit);
-      return { symbol, bars };
-    }),
-  );
-
-  for (const result of results) {
-    if (result.status === "rejected") continue;
-    const { symbol, bars } = result.value;
-    if (bars.length < Math.min(40, Math.floor(limit / 4))) continue;
-    const m = new Map<number, number>();
-    for (const b of bars) m.set(b.timestamp, b.close);
-    perSymbol.set(symbol, m);
-    valid.push(symbol);
+  // Process in batches to avoid saturating exchange rate limits.
+  for (let start = 0; start < symbols.length; start += BATCH_SIZE) {
+    const batch = symbols.slice(start, start + BATCH_SIZE);
+    const results = await Promise.allSettled(
+      batch.map(async (symbol) => {
+        const bars = await fetchOHLCV(symbol, timeframe, limit);
+        return { symbol, bars };
+      }),
+    );
+    for (const result of results) {
+      if (result.status === "rejected") continue;
+      const { symbol, bars } = result.value;
+      if (bars.length < Math.min(40, Math.floor(limit / 4))) continue;
+      const m = new Map<number, number>();
+      for (const b of bars) m.set(b.timestamp, b.close);
+      perSymbol.set(symbol, m);
+      valid.push(symbol);
+    }
   }
 
   if (valid.length === 0) {

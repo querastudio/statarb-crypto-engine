@@ -24,7 +24,7 @@ export const config = {
   minAbsCorrelation: num("MIN_ABS_CORRELATION", 0.7),
   adfPValueMax: num("ADF_PVALUE_MAX", 0.05),
   halfLifeMinBars: num("HALF_LIFE_MIN_BARS", 1),
-  halfLifeMaxBars: num("HALF_LIFE_MAX_BARS", 30),
+  halfLifeMaxBars: num("HALF_LIFE_MAX_BARS", 120), // 120 h = 5 days; 30 was too tight
   hurstMax: num("HURST_MAX", 0.5),
 
   // Signals
