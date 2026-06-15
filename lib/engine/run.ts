@@ -4,6 +4,7 @@
 import { config } from "@/lib/config";
 import { fetchAlignedCloses, getLiquidUniverse } from "@/lib/data/exchange";
 import { discoverPairs } from "./discovery";
+// discoverPairs now returns DiscoveryResult (pairs + BH correction stats)
 import { generateSignal } from "./signals";
 import { getPairs, savePairs, saveSignals, getBlacklist, pairKey } from "@/lib/db/supabase";
 import { alertSignal, isAlertable } from "@/lib/alert/telegram";
@@ -17,6 +18,10 @@ export interface ScanSummary {
   topPairs: Pair[];
   saved: boolean;
   saveError?: string;
+  // BH correction stats
+  candidatesBeforeBH: number;
+  droppedByBH: number;
+  bhThreshold: number;
 }
 
 // Use a shorter lookback for scan so each symbol fits in a single OKX page
@@ -34,7 +39,8 @@ export async function runScan(maxCombos?: number): Promise<ScanSummary> {
   const matrix = await fetchAlignedCloses(universe, config.timeframe, SCAN_LOOKBACK);
   const blacklist = new Set(await getBlacklist());
 
-  const pairs = discoverPairs(matrix, { maxCombos }).filter(
+  const result = discoverPairs(matrix, { maxCombos });
+  const pairs = result.pairs.filter(
     (p) => !blacklist.has(pairKey(p.symbol_a, p.symbol_b)),
   );
 
@@ -56,6 +62,9 @@ export async function runScan(maxCombos?: number): Promise<ScanSummary> {
     topPairs: pairs.slice(0, 20),
     saved,
     saveError,
+    candidatesBeforeBH: result.candidatesBeforeBH,
+    droppedByBH: result.droppedByBH,
+    bhThreshold: result.bhThreshold,
   };
 }
 

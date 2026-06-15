@@ -26,6 +26,9 @@ export const config = {
   halfLifeMinBars: num("HALF_LIFE_MIN_BARS", 1),
   halfLifeMaxBars: num("HALF_LIFE_MAX_BARS", 120), // 120 h = 5 days; 30 was too tight
   hurstMax: num("HURST_MAX", 0.5),
+  // Benjamini-Hochberg FDR: at most this fraction of reported pairs are false
+  // positives. 0.10 = 10% FDR. Lower = stricter (fewer but cleaner pairs).
+  fdrAlpha: num("FDR_ALPHA", 0.10),
 
   // Signals
   zscoreWindow: num("ZSCORE_WINDOW", 60),

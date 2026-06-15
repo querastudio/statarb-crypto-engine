@@ -29,8 +29,9 @@ async function main() {
   console.log(`Aligned: ${matrix.symbols.length} symbols × ${matrix.timestamps.length} bars`);
 
   console.log(`\nRunning pair discovery…`);
-  const pairs = discoverPairs(matrix);
-  console.log(`Found ${pairs.length} qualifying cointegrated pairs.\n`);
+  const result = discoverPairs(matrix);
+  const { pairs, candidatesBeforeBH, droppedByBH, bhThreshold } = result;
+  console.log(`Found ${pairs.length} qualifying pairs (${candidatesBeforeBH} passed naive ADF, ${droppedByBH} dropped by BH correction at threshold p≤${bhThreshold.toFixed(4)}).\n`);
 
   const top = pairs.slice(0, 15);
   console.table(

@@ -1,6 +1,11 @@
 // Pair discovery: scan a universe of aligned price series and rank pairs that
-// pass the full statistical gauntlet (correlation pre-filter → Engle-Granger
-// cointegration → half-life window → Hurst < 0.5).
+// pass the full statistical gauntlet:
+//   correlation pre-filter → Engle-Granger ADF (all p-values collected) →
+//   Benjamini-Hochberg FDR correction → half-life window → Hurst < 0.5
+//
+// The BH step is critical: without it, testing 1000+ combinations at α=0.05
+// produces ~50 false positives by pure chance. BH controls the expected
+// fraction of false discoveries to at most fdrAlpha (default 10%).
 
 import { config } from "@/lib/config";
 import { engleGranger, staticSpread } from "@/lib/stats/cointegration";
@@ -35,16 +40,40 @@ export function correlation(a: number[], b: number[]): number {
 }
 
 /**
+ * Benjamini-Hochberg procedure for False Discovery Rate control.
+ *
+ * Given m hypothesis tests, sort their p-values p(1) ≤ p(2) ≤ … ≤ p(m).
+ * Find the largest k where p(k) ≤ (k/m) × alpha. Reject all p ≤ p(k).
+ *
+ * At most `alpha` fraction of the reported discoveries are expected to be
+ * false positives (FDR ≤ alpha), with much higher power than Bonferroni.
+ *
+ * Returns the p-value threshold (0 if no tests pass).
+ */
+export function benjaminiHochberg(pValues: number[], alpha: number): number {
+  if (pValues.length === 0) return 0;
+  const m = pValues.length;
+  const sorted = [...pValues].sort((a, b) => a - b);
+  let threshold = 0;
+  for (let k = m; k >= 1; k--) {
+    if (sorted[k - 1] <= (k / m) * alpha) {
+      threshold = sorted[k - 1];
+      break;
+    }
+  }
+  return threshold;
+}
+
+/**
  * Composite ranking score for a candidate pair. Higher is better.
  * Rewards low ADF p-value, an ideal half-life (mid-window), and strong
  * anti-persistence (low Hurst).
  */
 export function scorePair(adfPValue: number, hl: number, hurst: number): number {
-  const pComponent = 1 - Math.min(1, adfPValue / config.adfPValueMax); // 1 best, 0 at threshold
-  // Ideal half-life is the geometric centre of the allowed window.
+  const pComponent = 1 - Math.min(1, adfPValue / config.adfPValueMax);
   const ideal = Math.sqrt(config.halfLifeMinBars * config.halfLifeMaxBars);
   const hlComponent = 1 / (1 + Math.abs(Math.log(hl / ideal)));
-  const hurstComponent = Math.max(0, (0.5 - hurst) / 0.5); // 1 at hurst 0, 0 at 0.5
+  const hurstComponent = Math.max(0, (0.5 - hurst) / 0.5);
   return 0.5 * pComponent + 0.3 * hlComponent + 0.2 * hurstComponent;
 }
 
@@ -53,68 +82,125 @@ export interface DiscoveryOptions {
   maxCombos?: number;
 }
 
+export interface DiscoveryResult {
+  pairs: Pair[];
+  /** Pairs that passed correlation + ADF before BH correction. */
+  candidatesBeforeBH: number;
+  /** Pairs dropped purely by BH correction (would have passed naive α filter). */
+  droppedByBH: number;
+  /** The BH-adjusted p-value threshold actually used. */
+  bhThreshold: number;
+  /** Total (i,j) combinations evaluated. */
+  combosEvaluated: number;
+}
+
 /**
  * Run discovery over a price matrix and return ranked, qualifying pairs.
+ *
+ * Two-phase approach:
+ *   Phase 1 — collect all ADF p-values for correlated pairs (no early cutoff).
+ *   Phase 2 — Benjamini-Hochberg FDR correction across ALL p-values at once,
+ *             then apply the corrected threshold + half-life + Hurst filters.
  */
-export function discoverPairs(matrix: PriceMatrix, options: DiscoveryOptions = {}): Pair[] {
+export function discoverPairs(
+  matrix: PriceMatrix,
+  options: DiscoveryOptions = {},
+): DiscoveryResult {
   const { symbols, closes } = matrix;
   const n = symbols.length;
-  const out: Pair[] = [];
-  let combos = 0;
   const maxCombos = options.maxCombos ?? Infinity;
 
-  for (let i = 0; i < n; i++) {
+  // ── Phase 1: Gather ADF candidates ──────────────────────────────────────
+  interface Candidate {
+    i: number;
+    j: number;
+    corr: number;
+    beta: number;
+    intercept: number;
+    pValue: number;
+  }
+
+  const candidates: Candidate[] = [];
+  let combosEvaluated = 0;
+
+  outer: for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
-      if (combos >= maxCombos) break;
-      combos++;
+      if (combosEvaluated >= maxCombos) break outer;
+      combosEvaluated++;
 
       const a = closes[i];
       const b = closes[j];
       if (!a || !b || a.length < 60) continue;
 
-      // 1) Correlation pre-filter (cheap).
+      // Correlation pre-filter (cheap — eliminates ~80% of pairs immediately).
       const corr = correlation(a, b);
       if (Math.abs(corr) < config.minAbsCorrelation) continue;
 
-      // 2) Engle-Granger cointegration. Orient A on the higher-priced leg as
-      //    the dependent variable for numerical stability; the result is
-      //    symmetric enough for screening.
+      // Run Engle-Granger ADF — collect p-value regardless of threshold.
+      // We do NOT apply `res.cointegrated` here; BH decides the cutoff.
       let res;
       try {
         res = engleGranger(a, b);
       } catch {
         continue;
       }
-      if (!res.cointegrated) continue;
 
-      // 3) Half-life of the static spread within the tradable window.
-      const spread = staticSpread(a, b, res.beta, res.alpha);
-      const hl = halfLife(spread);
-      if (!Number.isFinite(hl) || hl < config.halfLifeMinBars || hl > config.halfLifeMaxBars) {
-        continue;
-      }
-
-      // 4) Hurst confirmation of mean reversion.
-      const hurst = hurstExponent(spread);
-      if (hurst >= config.hurstMax) continue;
-
-      out.push({
-        symbol_a: symbols[i],
-        symbol_b: symbols[j],
-        beta: res.beta,
-        alpha: res.alpha,
-        adf_pvalue: res.pValue,
-        half_life: hl,
-        hurst,
-        correlation: corr,
-        score: scorePair(res.pValue, hl, hurst),
-        cointegrated: true,
-        timeframe: config.timeframe,
-      });
+      candidates.push({ i, j, corr, beta: res.beta, intercept: res.alpha, pValue: res.pValue });
     }
-    if (combos >= maxCombos) break;
+  }
+
+  // ── Phase 2: Benjamini-Hochberg FDR correction ───────────────────────────
+  const bhThreshold = benjaminiHochberg(
+    candidates.map((c) => c.pValue),
+    config.fdrAlpha,
+  );
+
+  // Count how many would have passed the naive threshold but are dropped by BH.
+  const naivePass = candidates.filter((c) => c.pValue <= config.adfPValueMax).length;
+  const bhPass = candidates.filter((c) => c.pValue <= bhThreshold).length;
+  const droppedByBH = Math.max(0, naivePass - bhPass);
+
+  // ── Phase 3: Apply BH threshold + half-life + Hurst ─────────────────────
+  const out: Pair[] = [];
+
+  for (const c of candidates) {
+    if (c.pValue > bhThreshold) continue;
+
+    const a = closes[c.i];
+    const b = closes[c.j];
+
+    const spread = staticSpread(a, b, c.beta, c.intercept);
+
+    const hl = halfLife(spread);
+    if (!Number.isFinite(hl) || hl < config.halfLifeMinBars || hl > config.halfLifeMaxBars) {
+      continue;
+    }
+
+    const hurst = hurstExponent(spread);
+    if (hurst >= config.hurstMax) continue;
+
+    out.push({
+      symbol_a: symbols[c.i],
+      symbol_b: symbols[c.j],
+      beta: c.beta,
+      alpha: c.intercept,
+      adf_pvalue: c.pValue,
+      half_life: hl,
+      hurst,
+      correlation: c.corr,
+      score: scorePair(c.pValue, hl, hurst),
+      cointegrated: true,
+      timeframe: config.timeframe,
+    });
   }
 
   out.sort((x, y) => y.score - x.score);
-  return out;
+
+  return {
+    pairs: out,
+    candidatesBeforeBH: naivePass,
+    droppedByBH,
+    bhThreshold,
+    combosEvaluated,
+  };
 }

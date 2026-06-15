@@ -61,8 +61,11 @@ export default function SetupPage() {
           `⚠️ ${data.pairsFound} pair ditemukan tapi GAGAL disimpan. Error: ${data.saveError ?? "tidak diketahui"}`,
         );
       } else {
+        const bhInfo = data.droppedByBH > 0
+          ? ` (${data.droppedByBH} pair dibuang koreksi BH, threshold p≤${Number(data.bhThreshold).toFixed(4)})`
+          : "";
         setScanResult(
-          `✅ ${data.pairsFound} pair disimpan ke Supabase dari ${data.rawUniverseSize ?? data.universeSize} simbol!`,
+          `✅ ${data.pairsFound} pair disimpan dari ${data.rawUniverseSize ?? data.universeSize} simbol!${bhInfo}`,
         );
       }
     } catch (e) {
