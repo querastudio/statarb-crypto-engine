@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { config } from "@/lib/config";
 import { fetchOHLCV } from "@/lib/data/exchange";
 import { buildSpreadSeries, classify } from "@/lib/engine/signals";
+import { detectRegime } from "@/lib/engine/regime";
 import type { OHLCV } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
@@ -65,6 +66,7 @@ export async function GET(req: NextRequest) {
     const lastIdx = zscore.length - 1;
     const z = zscore[lastIdx];
     const side = classify(z, thresholds);
+    const regime = detectRegime(spread, zscore);
 
     // Trim the z-score history to the valid (non-NaN) tail for a clean sparkline.
     const history: Array<{ t: number; z: number }> = [];
@@ -84,6 +86,7 @@ export async function GET(req: NextRequest) {
       thresholds,
       history: history.slice(-120),
       asOf: times[times.length - 1],
+      regime,
     });
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });

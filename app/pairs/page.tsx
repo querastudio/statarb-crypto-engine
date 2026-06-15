@@ -15,6 +15,13 @@ import {
 } from "@/components/format";
 import { ZScoreGauge, type Thresholds } from "@/components/ZScoreGauge";
 
+interface RegimeState {
+  score: number;
+  label: "SAFE" | "CAUTION" | "DANGER";
+  color: string;
+  warnings: string[];
+}
+
 interface LiveSignal {
   symbol_a: string;
   symbol_b: string;
@@ -27,7 +34,40 @@ interface LiveSignal {
   thresholds: Thresholds;
   history: Array<{ t: number; z: number }>;
   asOf: number;
+  regime?: RegimeState;
   error?: string;
+}
+
+function RegimeBanner({ regime }: { regime: RegimeState }) {
+  const icon = regime.label === "SAFE" ? "🟢" : regime.label === "CAUTION" ? "⚠️" : "🔴";
+  const title =
+    regime.label === "SAFE"
+      ? "Kondisi Pasar NORMAL — aman untuk trading"
+      : regime.label === "CAUTION"
+      ? "Kondisi Pasar WASPADA — pertimbangkan posisi lebih kecil"
+      : "Kondisi Pasar BERBAHAYA — hindari masuk posisi baru";
+
+  return (
+    <div
+      style={{
+        padding: "10px 14px",
+        borderRadius: 8,
+        background: `${regime.color}11`,
+        border: `1px solid ${regime.color}44`,
+        borderLeft: `4px solid ${regime.color}`,
+        marginBottom: 16,
+      }}
+    >
+      <div style={{ fontWeight: 700, fontSize: 13, color: regime.color, marginBottom: regime.warnings.length > 0 ? 6 : 0 }}>
+        {icon} REGIME: {regime.label} — {title}
+      </div>
+      {regime.warnings.map((w, i) => (
+        <div key={i} style={{ fontSize: 12, color: "var(--muted)", marginTop: 3, paddingLeft: 4 }}>
+          · {w}
+        </div>
+      ))}
+    </div>
+  );
 }
 
 // ── Plain-language explainer of how to read the table ──────────────────────────
@@ -167,6 +207,7 @@ function LivePanel({ pair, onClose }: { pair: Pair; onClose?: () => void }) {
           </button>
         )}
       </div>
+      {sig.regime && <RegimeBanner regime={sig.regime} />}
       <ZScoreGauge
         z={sig.zscore}
         thresholds={sig.thresholds}

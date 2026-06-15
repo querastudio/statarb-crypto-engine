@@ -10,6 +10,7 @@
 
 import { config } from "@/lib/config";
 import { buildSpreadSeries } from "./signals";
+import { detectRegime } from "./regime";
 import { halfLife } from "@/lib/stats/halflife";
 import type {
   BacktestMetrics,
@@ -28,6 +29,7 @@ const DEFAULT_PARAMS: BacktestParams = {
   slippage: config.slippage,
   useKalman: true,
   trainFraction: 0.7,
+  useRegimeFilter: false,
 };
 
 /** Approximate number of bars per year for the configured timeframe. */
@@ -190,6 +192,13 @@ export function backtestPair(
           position = -1; // short spread
         } else if (z < -params.entryThreshold) {
           position = 1; // long spread
+        }
+        // Regime filter: skip new entries when market conditions are dangerous.
+        if (position !== 0 && params.useRegimeFilter) {
+          const regime = detectRegime(spread.slice(0, i + 1), zscore.slice(0, i + 1));
+          if (regime.label === "DANGER") {
+            position = 0; // abort entry
+          }
         }
         if (position !== 0) {
           entryIndex = i;

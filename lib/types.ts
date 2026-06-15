@@ -172,4 +172,6 @@ export interface BacktestParams {
   useKalman: boolean;
   /** Fraction of data used for in-sample (train); remainder is out-of-sample. */
   trainFraction: number;
+  /** Skip new entries when regime detector signals DANGER. */
+  useRegimeFilter: boolean;
 }

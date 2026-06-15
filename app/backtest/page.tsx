@@ -183,6 +183,7 @@ function BacktestInner() {
   const [symbolA, setSymbolA] = useState("ETH/USDT");
   const [symbolB, setSymbolB] = useState("BTC/USDT");
   const [useKalman, setUseKalman] = useState(true);
+  const [useRegimeFilter, setUseRegimeFilter] = useState(false);
   const [entry, setEntry] = useState(2.0);
   const [exitT, setExitT] = useState(0.5);
   const [stop, setStop] = useState(3.5);
@@ -213,6 +214,7 @@ function BacktestInner() {
           lookbackBars,
           params: {
             useKalman,
+            useRegimeFilter,
             entryThreshold: entry,
             exitThreshold: exitT,
             stopThreshold: stop,
@@ -306,6 +308,15 @@ function BacktestInner() {
               style={{ width: "auto" }}
             />
             Kalman beta
+          </label>
+          <label className="row" style={{ gap: 6 }} title="Skip entri baru saat regime detector mendeteksi kondisi DANGER">
+            <input
+              type="checkbox"
+              checked={useRegimeFilter}
+              onChange={(e) => setUseRegimeFilter(e.target.checked)}
+              style={{ width: "auto" }}
+            />
+            Regime filter
           </label>
           <span className="spacer" />
           <button className="primary" onClick={run} disabled={loading}>
