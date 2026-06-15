@@ -3,11 +3,11 @@
   "crons": [
     {
       "path": "/api/cron/scan",
-      "schedule": "0 */6 * * *"
+      "schedule": "0 1 * * *"
     },
     {
       "path": "/api/cron/signals",
-      "schedule": "*/15 * * * *"
+      "schedule": "0 13 * * *"
     }
   ],
   "functions": {
