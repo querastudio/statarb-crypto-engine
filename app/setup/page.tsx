@@ -37,6 +37,32 @@ export default function SetupPage() {
   const [error, setError] = useState("");
   const [schemaSql, setSchemaSql] = useState("");
   const [supabaseUrl, setSupabaseUrl] = useState("");
+  const [scanResult, setScanResult] = useState<string | null>(null);
+  const [scanning, setScanning] = useState(false);
+
+  async function handleScan() {
+    setScanning(true);
+    setScanResult(null);
+    try {
+      const res = await fetch("/api/scan-now", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ serviceKey }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        setScanResult(`❌ ${data.error ?? "Scan gagal"}`);
+      } else {
+        setScanResult(
+          `✅ Scan selesai! Ditemukan ${data.pairsFound} pair dari ${data.universeSize} simbol (${data.alignedBars} bars).`,
+        );
+      }
+    } catch (e) {
+      setScanResult(`❌ ${(e as Error).message}`);
+    } finally {
+      setScanning(false);
+    }
+  }
 
   async function handleTest() {
     setLoading(true);
@@ -253,16 +279,38 @@ export default function SetupPage() {
             <h3 style={{ margin: 0, fontSize: 16 }}>✅ Semua siap! Jalankan scan pertama</h3>
           </div>
           <p className="muted" style={{ margin: "0 0 16px", fontSize: 13 }}>
-            Setelah Vercel selesai redeploy, klik tombol di bawah untuk mulai scan pair:
+            Klik tombol di bawah untuk mulai scan pair (menggunakan Service Role Key yang kamu masukkan tadi):
           </p>
           <div className="row">
-            <a href="/api/cron/scan" target="_blank" rel="noopener">
-              <button className="primary">🔍 Jalankan Scan Sekarang</button>
-            </a>
+            <button className="primary" onClick={handleScan} disabled={scanning || !serviceKey}>
+              {scanning ? "⏳ Scanning... (bisa 30-60 detik)" : "🔍 Jalankan Scan Sekarang"}
+            </button>
+            <Link href="/pairs">
+              <button>Lihat Pairs</button>
+            </Link>
             <Link href="/">
               <button>Lihat Dashboard</button>
             </Link>
           </div>
+          {scanResult && (
+            <div
+              className={scanResult.startsWith("✅") ? "notice" : "notice"}
+              style={{
+                marginTop: 12,
+                borderColor: scanResult.startsWith("✅") ? "var(--green)" : undefined,
+              }}
+            >
+              {scanResult}
+              {scanResult.startsWith("✅") && (
+                <span>
+                  {" "}
+                  <Link href="/pairs" style={{ color: "var(--green)" }}>
+                    → Buka Pairs
+                  </Link>
+                </span>
+              )}
+            </div>
+          )}
         </div>
       )}
     </div>

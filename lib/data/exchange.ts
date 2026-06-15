@@ -1,13 +1,9 @@
 // Exchange data access.
 //
-// OHLCV price data uses Bybit or OKX public REST APIs directly — no API key,
-// and neither geo-blocks Vercel's US-based servers. Binance returns HTTP 451
-// (geo-block) from Vercel, so it is NOT used as a primary provider.
-//
-// CCXT is kept only for getLiquidUniverse (universe scan cron) which needs
-// market metadata and runs infrequently.
+// OHLCV price data and the liquid universe both use Bybit or OKX public REST
+// APIs directly — no API key, and neither geo-blocks Vercel's US-based servers.
+// Binance returns HTTP 451 (geo-block) from Vercel, so it is NOT used.
 
-import ccxt, { type Exchange } from "ccxt";
 import { config } from "@/lib/config";
 import type { OHLCV } from "@/lib/types";
 import { fetchOHLCVBybit, fetchOHLCVOkx } from "./providers";
@@ -41,44 +37,38 @@ export async function fetchOHLCV(
   throw new Error(`All providers failed for ${symbol}: ${errors.join(" | ")}`);
 }
 
-// ── CCXT (universe scan only) ─────────────────────────────────────────────────
-
-let cachedExchange: Exchange | null = null;
-
-function getExchange(): Exchange {
-  if (cachedExchange) return cachedExchange;
-  const id = config.exchange as string;
-  const ExchangeCtor = (ccxt as unknown as Record<string, new (cfg: object) => Exchange>)[id];
-  if (!ExchangeCtor) {
-    throw new Error(`Unknown exchange "${config.exchange}". Check EXCHANGE env var.`);
-  }
-  cachedExchange = new ExchangeCtor({ enableRateLimit: true });
-  return cachedExchange;
-}
+// ── Universe discovery via Bybit spot tickers ─────────────────────────────────
 
 /**
  * Return the top-N most liquid spot symbols quoted in the configured quote
- * asset, ranked by 24h quote volume. Symbols are CCXT unified (e.g. "BTC/USDT").
- * Used by the scan cron only.
+ * asset, ranked by 24h turnover. Uses Bybit's public spot tickers endpoint —
+ * no API key required, no geo-block from Vercel. Symbols are CCXT-unified
+ * format (e.g. "BTC/USDT").
  */
 export async function getLiquidUniverse(limit = config.universeSize): Promise<string[]> {
-  const ex = getExchange();
-  await ex.loadMarkets();
-  const tickers = await ex.fetchTickers();
-
   const quote = config.quoteAsset;
-  const candidates: Array<{ symbol: string; quoteVolume: number }> = [];
+  const res = await fetch("https://api.bybit.com/v5/market/tickers?category=spot", {
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`Bybit tickers HTTP ${res.status}`);
+  const json = (await res.json()) as {
+    retCode: number;
+    result: { list: Array<{ symbol: string; turnover24h: string }> };
+  };
+  if (json.retCode !== 0) throw new Error(`Bybit tickers retCode ${json.retCode}`);
 
-  for (const [symbol, ticker] of Object.entries(tickers)) {
-    const market = ex.markets[symbol];
-    if (!market || !market.spot || market.active === false) continue;
-    if (market.quote !== quote) continue;
-    if (/UP$|DOWN$|BULL$|BEAR$|[0-9]+L$|[0-9]+S$/.test(market.base ?? "")) continue;
-    const qv = (ticker as { quoteVolume?: number }).quoteVolume ?? 0;
-    if (qv > 0) candidates.push({ symbol, quoteVolume: qv });
+  const candidates: Array<{ symbol: string; turnover: number }> = [];
+  for (const item of json.result.list) {
+    if (!item.symbol.endsWith(quote)) continue;
+    const base = item.symbol.slice(0, item.symbol.length - quote.length);
+    // Skip leveraged/inverse tokens
+    if (/UP$|DOWN$|BULL$|BEAR$|[0-9]+[LS]$/.test(base)) continue;
+    const turnover = parseFloat(item.turnover24h);
+    if (!isFinite(turnover) || turnover <= 0) continue;
+    candidates.push({ symbol: `${base}/${quote}`, turnover });
   }
 
-  candidates.sort((a, b) => b.quoteVolume - a.quoteVolume);
+  candidates.sort((a, b) => b.turnover - a.turnover);
   return candidates.slice(0, limit).map((c) => c.symbol);
 }
 
