@@ -143,6 +143,21 @@ export interface WalkForwardResult {
   isRobust: boolean;
 }
 
+/** Kelly Criterion position-sizing result. */
+export interface KellyResult {
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  /** Raw Kelly fraction. Aggressive — for reference only. */
+  kellyFull: number;
+  /** Half-Kelly: recommended for live trading. */
+  kellyHalf: number;
+  /** Quarter-Kelly: conservative, for first live trades. */
+  kellyQuarter: number;
+  /** Tier label based on half-Kelly. */
+  tier: "strong" | "moderate" | "weak" | "insufficient";
+}
+
 export interface BacktestResult {
   symbol_a: string;
   symbol_b: string;
@@ -159,6 +174,8 @@ export interface BacktestResult {
   params: BacktestParams;
   /** Walk-forward analysis: strategy performance across rolling time slices. */
   walkForward?: WalkForwardResult;
+  /** Kelly Criterion position sizing recommendation. Null if <10 trades. */
+  kelly?: KellyResult | null;
 }
 
 export interface BacktestParams {

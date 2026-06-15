@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { fetchAlignedCloses } from "@/lib/data/exchange";
 import { backtestPair } from "@/lib/engine/backtest";
 import { walkForward } from "@/lib/engine/walkforward";
+import { computeKelly } from "@/lib/engine/kelly";
 import { saveBacktest } from "@/lib/db/supabase";
 import type { BacktestParams } from "@/lib/types";
 
@@ -62,7 +63,8 @@ export async function POST(req: NextRequest) {
     );
 
     const wf = walkForward(result, 4);
-    const finalResult = { ...result, walkForward: wf };
+    const kelly = computeKelly(result.trades);
+    const finalResult = { ...result, walkForward: wf, kelly };
 
     try {
       await saveBacktest(result);

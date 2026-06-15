@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import type { BacktestResult, BacktestMetrics, WalkForwardResult } from "@/lib/types";
+import type { BacktestResult, BacktestMetrics, WalkForwardResult, KellyResult } from "@/lib/types";
 import { EquityChart } from "@/components/EquityChart";
 import { ZScoreChart } from "@/components/ZScoreChart";
 import { num, pct, signClass } from "@/components/format";
@@ -178,6 +178,97 @@ function WalkForwardPanel({ wf }: { wf: WalkForwardResult }) {
   );
 }
 
+function KellyPanel({ kelly }: { kelly: KellyResult }) {
+  const tierMeta = {
+    strong:       { icon: "✅", label: "Sinyal kuat — layak live trading",  color: "var(--green)" },
+    moderate:     { icon: "🟡", label: "Sinyal sedang — hati-hati",         color: "var(--amber)" },
+    weak:         { icon: "⚠️", label: "Sinyal lemah — paper trade dulu",   color: "var(--amber)" },
+    insufficient: { icon: "❌", label: "Tidak cukup — jangan live trading", color: "var(--red)"   },
+  }[kelly.tier];
+
+  const pct2 = (v: number) => `${(v * 100).toFixed(2)}%`;
+
+  return (
+    <div
+      className="card"
+      style={{ borderLeft: `4px solid ${tierMeta.color}` }}
+    >
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: tierMeta.color }}>
+            {tierMeta.icon} {tierMeta.label}
+          </div>
+          <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>
+            Win rate {pct2(kelly.winRate)} · Avg untung {pct2(kelly.avgWin)} · Avg rugi {pct2(kelly.avgLoss)}
+          </div>
+        </div>
+      </div>
+
+      {/* Recommendation rows */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {/* Half-Kelly — primary recommendation */}
+        <div
+          style={{
+            padding: "12px 14px",
+            borderRadius: 8,
+            background: "rgba(38,166,154,0.08)",
+            border: "1px solid rgba(38,166,154,0.25)",
+          }}
+        >
+          <div style={{ fontWeight: 700, fontSize: 14, color: "var(--green)", marginBottom: 3 }}>
+            ▶ Rekomendasi: masuk dengan <span style={{ fontSize: 18 }}>{pct2(kelly.kellyHalf)}</span> modal per trade
+          </div>
+          <div style={{ fontSize: 12, color: "var(--muted)" }}>
+            Half-Kelly — optimal untuk pertumbuhan jangka panjang tanpa risiko bangkrut. Ini yang digunakan quant fund profesional.
+          </div>
+        </div>
+
+        {/* Quarter-Kelly — conservative */}
+        <div
+          style={{
+            padding: "10px 14px",
+            borderRadius: 8,
+            background: "rgba(139,147,167,0.06)",
+            border: "1px solid rgba(139,147,167,0.2)",
+          }}
+        >
+          <div style={{ fontWeight: 600, fontSize: 13, color: "var(--text)", marginBottom: 2 }}>
+            Konservatif (Quarter-Kelly): {pct2(kelly.kellyQuarter)} per trade
+          </div>
+          <div style={{ fontSize: 12, color: "var(--muted)" }}>
+            Disarankan untuk 10–20 trade pertama di live trading. Lebih lambat tumbuh, tapi jauh lebih tahan estimasi yang meleset.
+          </div>
+        </div>
+
+        {/* Full-Kelly — warning */}
+        <div
+          style={{
+            padding: "10px 14px",
+            borderRadius: 8,
+            background: "rgba(239,83,80,0.06)",
+            border: "1px solid rgba(239,83,80,0.2)",
+          }}
+        >
+          <div style={{ fontWeight: 600, fontSize: 13, color: "var(--red)", marginBottom: 2 }}>
+            ⚠ Full-Kelly (jangan dipakai): {pct2(kelly.kellyFull)}
+          </div>
+          <div style={{ fontSize: 12, color: "var(--muted)" }}>
+            Matematis optimal tapi sangat agresif. Estimasi win rate meleset 10% saja bisa memangkas modal setengahnya.
+            Hanya untuk referensi.
+          </div>
+        </div>
+      </div>
+
+      <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 12 }}>
+        Formula: f* = W/A − (1−W)/B, di mana W = win rate, A = rata-rata rugi, B = rata-rata untung.
+        Rekomendasi berdasarkan {kelly.winRate > 0 ? Math.round(kelly.winRate * 100) : "—"}% win rate dari backtest.
+        Hasil live bisa berbeda.
+      </div>
+    </div>
+  );
+}
+
 function BacktestInner() {
   const params = useSearchParams();
   const [symbolA, setSymbolA] = useState("ETH/USDT");
@@ -343,6 +434,13 @@ function BacktestInner() {
               <div className="card">
                 <WalkForwardPanel wf={result.walkForward} />
               </div>
+            </>
+          )}
+
+          {result.kelly && (
+            <>
+              <h2 className="section-title">Ukuran posisi — Kelly Criterion</h2>
+              <KellyPanel kelly={result.kelly} />
             </>
           )}
 
