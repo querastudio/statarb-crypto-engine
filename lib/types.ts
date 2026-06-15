@@ -118,6 +118,31 @@ export interface EquityPoint {
   zscore: number;
 }
 
+/** One time-slice in a walk-forward analysis. */
+export interface WalkForwardFold {
+  /** Human label, e.g. "Fold 1". */
+  label: string;
+  startBar: number;
+  endBar: number;
+  /** Net total return over this fold (after costs). */
+  totalReturn: number;
+  sharpe: number;
+  maxDrawdown: number;
+  totalTrades: number;
+  winRate: number;
+}
+
+/** Aggregate result of walk-forward analysis across all folds. */
+export interface WalkForwardResult {
+  folds: WalkForwardFold[];
+  /** Fraction of folds with positive net return (0..1). */
+  consistencyPct: number;
+  avgSharpe: number;
+  avgReturn: number;
+  /** True if >60% of folds profitable AND avgSharpe > 0.5. */
+  isRobust: boolean;
+}
+
 export interface BacktestResult {
   symbol_a: string;
   symbol_b: string;
@@ -132,6 +157,8 @@ export interface BacktestResult {
   trades: BacktestTrade[];
   equityCurve: EquityPoint[];
   params: BacktestParams;
+  /** Walk-forward analysis: strategy performance across rolling time slices. */
+  walkForward?: WalkForwardResult;
 }
 
 export interface BacktestParams {

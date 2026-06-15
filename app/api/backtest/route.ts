@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchAlignedCloses } from "@/lib/data/exchange";
 import { backtestPair } from "@/lib/engine/backtest";
+import { walkForward } from "@/lib/engine/walkforward";
 import { saveBacktest } from "@/lib/db/supabase";
 import type { BacktestParams } from "@/lib/types";
 
@@ -60,13 +61,16 @@ export async function POST(req: NextRequest) {
       overrides,
     );
 
+    const wf = walkForward(result, 4);
+    const finalResult = { ...result, walkForward: wf };
+
     try {
       await saveBacktest(result);
     } catch {
       /* best-effort */
     }
 
-    return NextResponse.json(result);
+    return NextResponse.json(finalResult);
   } catch (err) {
     return NextResponse.json({ error: (err as Error).message }, { status: 500 });
   }

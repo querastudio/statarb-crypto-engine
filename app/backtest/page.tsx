@@ -2,7 +2,7 @@
 
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import type { BacktestResult, BacktestMetrics } from "@/lib/types";
+import type { BacktestResult, BacktestMetrics, WalkForwardResult } from "@/lib/types";
 import { EquityChart } from "@/components/EquityChart";
 import { ZScoreChart } from "@/components/ZScoreChart";
 import { num, pct, signClass } from "@/components/format";
@@ -74,6 +74,106 @@ function MetricsGrid({ m }: { m: BacktestMetrics }) {
         value={`${num(m.avgTradeDurationBars, 1)} bars`}
         help="Rata-rata lama posisi (dalam bar/jam)."
       />
+    </div>
+  );
+}
+
+function WalkForwardPanel({ wf }: { wf: WalkForwardResult }) {
+  const verdict = wf.isRobust
+    ? { icon: "✅", label: "Strategi Konsisten & Robust", color: "var(--green)" }
+    : wf.consistencyPct >= 0.5
+    ? { icon: "⚠️", label: "Setengah Konsisten — hati-hati", color: "var(--amber)" }
+    : { icon: "❌", label: "Tidak Konsisten — strategi belum handal", color: "var(--red)" };
+
+  const maxAbs = Math.max(...wf.folds.map((f) => Math.abs(f.totalReturn)), 0.01);
+
+  return (
+    <div>
+      {/* Verdict */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "12px 16px",
+          borderRadius: 10,
+          background: "var(--panel-2)",
+          border: `1px solid ${verdict.color}`,
+          borderLeft: `5px solid ${verdict.color}`,
+          marginBottom: 20,
+        }}
+      >
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 15, color: verdict.color }}>
+            {verdict.icon} {verdict.label}
+          </div>
+          <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 3 }}>
+            {Math.round(wf.consistencyPct * 100)}% periode menguntungkan ·
+            Avg Sharpe {num(wf.avgSharpe)} ·
+            Avg Return {pct(wf.avgReturn)}
+          </div>
+        </div>
+      </div>
+
+      {/* Visual bar chart per fold */}
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-end", height: 64, marginBottom: 8 }}>
+        {wf.folds.map((f) => {
+          const isPos = f.totalReturn >= 0;
+          const barH = Math.max(4, Math.abs(f.totalReturn / maxAbs) * 56);
+          return (
+            <div key={f.label} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+              <span style={{ fontSize: 11, color: isPos ? "var(--green)" : "var(--red)", fontWeight: 700 }}>
+                {pct(f.totalReturn)}
+              </span>
+              <div style={{ width: "100%", display: "flex", alignItems: isPos ? "flex-end" : "flex-start", height: 40 }}>
+                <div
+                  style={{
+                    width: "100%",
+                    height: barH,
+                    background: isPos ? "rgba(38,166,154,0.5)" : "rgba(239,83,80,0.5)",
+                    border: `1px solid ${isPos ? "var(--green)" : "var(--red)"}`,
+                    borderRadius: 3,
+                  }}
+                />
+              </div>
+              <span style={{ fontSize: 11, color: "var(--muted)" }}>{f.label}</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Per-fold table */}
+      <div style={{ overflowX: "auto" }}>
+        <table>
+          <thead>
+            <tr>
+              <th>Periode</th>
+              <th>Return</th>
+              <th>Sharpe</th>
+              <th>Max DD</th>
+              <th>Trades</th>
+              <th>Win Rate</th>
+            </tr>
+          </thead>
+          <tbody>
+            {wf.folds.map((f) => (
+              <tr key={f.label}>
+                <td style={{ fontWeight: 600 }}>{f.label}</td>
+                <td className={signClass(f.totalReturn)}>{pct(f.totalReturn)}</td>
+                <td className={signClass(f.sharpe)}>{num(f.sharpe)}</td>
+                <td className="neg">{pct(f.maxDrawdown)}</td>
+                <td>{f.totalTrades}</td>
+                <td>{pct(f.winRate)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+        Walk-forward membagi periode OOS menjadi {wf.folds.length} irisan waktu yang tidak tumpang tindih.
+        Strategi yang bagus harus menguntungkan di sebagian besar irisan — bukan hanya satu periode.
+      </p>
     </div>
   );
 }
@@ -223,6 +323,17 @@ function BacktestInner() {
 
           <h2 className="section-title">Out-of-sample (test) — after cost</h2>
           <MetricsGrid m={result.metricsOOS} />
+
+          {result.walkForward && (
+            <>
+              <h2 className="section-title">
+                Konsistensi strategi (walk-forward)
+              </h2>
+              <div className="card">
+                <WalkForwardPanel wf={result.walkForward} />
+              </div>
+            </>
+          )}
 
           <h2 className="section-title">Equity curve</h2>
           <div className="card">
