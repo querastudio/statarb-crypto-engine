@@ -17,6 +17,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <Link href="/">Dashboard</Link>
           <Link href="/pairs">Pairs</Link>
           <Link href="/backtest">Backtest</Link>
+          <Link href="/setup">Setup</Link>
           <span className="spacer" />
           <span className="muted" style={{ fontSize: 12 }}>research &amp; education only</span>
         </nav>
