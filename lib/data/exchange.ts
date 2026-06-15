@@ -161,17 +161,27 @@ export async function fetchAlignedCloses(
     return { symbols: [], timestamps: [], closes: [] };
   }
 
+  // Robust alignment. The common-timestamp set is the INTERSECTION across
+  // symbols, so a single freshly-listed coin with a short history would
+  // otherwise collapse the timeline and starve every pair of bars (→ 0 pairs).
+  // Drop symbols whose history is much shorter than the fullest symbol's before
+  // intersecting, so a few new listings don't sink the whole scan.
+  const maxBars = Math.max(...valid.map((s) => perSymbol.get(s)!.size));
+  const minRequired = Math.max(60, Math.floor(maxBars * 0.8));
+  const wellCovered = valid.filter((s) => perSymbol.get(s)!.size >= minRequired);
+  const universe = wellCovered.length >= 2 ? wellCovered : valid;
+
   let common: number[] | null = null;
-  for (const symbol of valid) {
+  for (const symbol of universe) {
     const ts = Array.from(perSymbol.get(symbol)!.keys());
     common = common === null ? ts : common.filter((t) => perSymbol.get(symbol)!.has(t));
   }
   const timestamps = (common ?? []).sort((a, b) => a - b);
 
-  const closes = valid.map((symbol) => {
+  const closes = universe.map((symbol) => {
     const m = perSymbol.get(symbol)!;
     return timestamps.map((t) => m.get(t)!);
   });
 
-  return { symbols: valid, timestamps, closes };
+  return { symbols: universe, timestamps, closes };
 }

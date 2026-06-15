@@ -53,8 +53,16 @@ export default function SetupPage() {
       if (!res.ok || !data.ok) {
         setScanResult(`❌ ${data.error ?? "Scan gagal"}`);
       } else if (data.pairsFound === 0) {
+        const bars = data.alignedBars ?? 0;
+        const cand = data.candidatesBeforeBH ?? 0;
+        const detail =
+          bars < 60
+            ? `Hanya ${bars} bar selaras (perlu ≥60) — data exchange sedang tidak lengkap, coba lagi beberapa menit.`
+            : cand === 0
+            ? `Tidak ada pasangan yang cukup berkorelasi saat ini (${bars} bar selaras). Coba lagi nanti.`
+            : `Ada ${cand} kandidat tapi semua tersaring uji statistik ketat (${bars} bar selaras). Coba lagi nanti.`;
         setScanResult(
-          `⚠️ Scan selesai tapi 0 pair ditemukan dari ${data.rawUniverseSize ?? data.universeSize} simbol. Coba lagi nanti.`,
+          `⚠️ 0 pair dari ${data.universeSize} simbol. ${detail}`,
         );
       } else if (!data.saved) {
         setScanResult(
