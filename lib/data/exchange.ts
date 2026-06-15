@@ -75,9 +75,10 @@ export interface PriceMatrix {
 }
 
 /**
- * Fetch and time-align close prices for several symbols. Bars are intersected
- * on timestamp so every series is the same length and aligned. Symbols that
- * fail to fetch are dropped.
+ * Fetch and time-align close prices for several symbols. All symbols are
+ * fetched in parallel to stay within Vercel serverless time limits. Bars are
+ * intersected on timestamp so every series is the same length and aligned.
+ * Symbols that fail to fetch are silently dropped.
  */
 export async function fetchAlignedCloses(
   symbols: string[],
@@ -87,17 +88,23 @@ export async function fetchAlignedCloses(
   const perSymbol = new Map<string, Map<number, number>>();
   const valid: string[] = [];
 
-  for (const symbol of symbols) {
-    try {
+  // Fetch all symbols in parallel — critical for staying inside Vercel's 10s
+  // Hobby timeout when the caller passes 2–5 symbols.
+  const results = await Promise.allSettled(
+    symbols.map(async (symbol) => {
       const bars = await fetchOHLCV(symbol, timeframe, limit);
-      if (bars.length < Math.min(60, limit / 2)) continue;
-      const m = new Map<number, number>();
-      for (const b of bars) m.set(b.timestamp, b.close);
-      perSymbol.set(symbol, m);
-      valid.push(symbol);
-    } catch {
-      // Skip symbols that error out (delisted, rate-limited, etc.).
-    }
+      return { symbol, bars };
+    }),
+  );
+
+  for (const result of results) {
+    if (result.status === "rejected") continue;
+    const { symbol, bars } = result.value;
+    if (bars.length < Math.min(40, Math.floor(limit / 4))) continue;
+    const m = new Map<number, number>();
+    for (const b of bars) m.set(b.timestamp, b.close);
+    perSymbol.set(symbol, m);
+    valid.push(symbol);
   }
 
   if (valid.length === 0) {

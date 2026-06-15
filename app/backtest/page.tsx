@@ -43,6 +43,7 @@ function BacktestInner() {
   const [exitT, setExitT] = useState(0.5);
   const [stop, setStop] = useState(3.5);
   const [window, setWindow] = useState(60);
+  const [lookbackBars, setLookbackBars] = useState(300);
   const [result, setResult] = useState<BacktestResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -65,6 +66,7 @@ function BacktestInner() {
         body: JSON.stringify({
           symbolA,
           symbolB,
+          lookbackBars,
           params: {
             useKalman,
             entryThreshold: entry,
@@ -102,6 +104,16 @@ function BacktestInner() {
           <label>
             Symbol B{" "}
             <input value={symbolB} onChange={(e) => setSymbolB(e.target.value)} size={12} />
+          </label>
+          <label>
+            Lookback bars{" "}
+            <input
+              type="number"
+              value={lookbackBars}
+              onChange={(e) => setLookbackBars(Number(e.target.value))}
+              style={{ width: 70 }}
+              title="Number of OHLCV bars to fetch (300 recommended for Vercel Hobby)"
+            />
           </label>
           <label>
             Window{" "}
