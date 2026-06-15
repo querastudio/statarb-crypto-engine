@@ -98,25 +98,43 @@ function QCell({ value, q }: { value: string; q: ReturnType<typeof adfQuality> }
   );
 }
 
+const REFRESH_MS = 30_000;
+
 function LivePanel({ pair, onClose }: { pair: Pair; onClose?: () => void }) {
   const [sig, setSig] = useState<LiveSignal | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [updatedAt, setUpdatedAt] = useState<number | null>(null);
 
   useEffect(() => {
     let alive = true;
-    fetch(`/api/signal-live?a=${encodeURIComponent(pair.symbol_a)}&b=${encodeURIComponent(pair.symbol_b)}`)
-      .then((r) => r.json())
-      .then((d) => {
-        if (alive) setSig(d);
-      })
-      .catch((e) => {
+
+    async function load(isAuto: boolean) {
+      if (isAuto) setRefreshing(true);
+      try {
+        const r = await fetch(
+          `/api/signal-live?a=${encodeURIComponent(pair.symbol_a)}&b=${encodeURIComponent(pair.symbol_b)}`,
+        );
+        const d = await r.json();
+        if (alive) {
+          setSig(d);
+          setUpdatedAt(Date.now());
+        }
+      } catch (e) {
         if (alive) setSig({ error: (e as Error).message } as LiveSignal);
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
+      } finally {
+        if (alive) {
+          setLoading(false);
+          setRefreshing(false);
+        }
+      }
+    }
+
+    load(false);
+    const id = setInterval(() => load(true), REFRESH_MS);
     return () => {
       alive = false;
+      clearInterval(id);
     };
   }, [pair.symbol_a, pair.symbol_b]);
 
@@ -126,13 +144,29 @@ function LivePanel({ pair, onClose }: { pair: Pair; onClose?: () => void }) {
 
   return (
     <div style={{ padding: "8px 16px 20px" }}>
-      {onClose && (
-        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+        <span style={{ fontSize: 12, color: "var(--muted)", display: "flex", alignItems: "center", gap: 6 }}>
+          <span
+            style={{
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: refreshing ? "var(--amber)" : "var(--green)",
+              boxShadow: `0 0 6px ${refreshing ? "var(--amber)" : "var(--green)"}`,
+            }}
+          />
+          {refreshing ? "Memperbarui…" : "Live · auto-refresh 30 dtk"}
+          {updatedAt && !refreshing && (
+            <span>· terakhir {new Date(updatedAt).toLocaleTimeString()}</span>
+          )}
+        </span>
+        <span className="spacer" />
+        {onClose && (
           <button onClick={onClose} style={{ padding: "4px 12px", fontSize: 13 }}>
             ✕ Tutup
           </button>
-        </div>
-      )}
+        )}
+      </div>
       <ZScoreGauge
         z={sig.zscore}
         thresholds={sig.thresholds}
@@ -163,14 +197,24 @@ export default function PairsPage() {
   const [openIdx, setOpenIdx] = useState<number | null>(null);
 
   useEffect(() => {
-    fetch("/api/pairs")
-      .then((r) => r.json())
-      .then((d) => {
-        setPairs(d.pairs ?? []);
-        setConfigured(Boolean(d.configured));
-      })
-      .catch(() => setConfigured(false))
-      .finally(() => setLoading(false));
+    let alive = true;
+    function load() {
+      fetch("/api/pairs")
+        .then((r) => r.json())
+        .then((d) => {
+          if (!alive) return;
+          setPairs(d.pairs ?? []);
+          setConfigured(Boolean(d.configured));
+        })
+        .catch(() => alive && setConfigured(false))
+        .finally(() => alive && setLoading(false));
+    }
+    load();
+    const id = setInterval(load, 60_000);
+    return () => {
+      alive = false;
+      clearInterval(id);
+    };
   }, []);
 
   return (
