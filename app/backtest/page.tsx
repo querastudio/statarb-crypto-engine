@@ -21,7 +21,11 @@ function MetricsGrid({ m }: { m: BacktestMetrics }) {
     <div className="grid cols-4">
       <MetricCard label="Total return" value={pct(m.totalReturn)} cls={signClass(m.totalReturn)} />
       <MetricCard label="Sharpe" value={num(m.sharpe)} cls={signClass(m.sharpe)} />
-      <MetricCard label="Sortino" value={num(m.sortino)} cls={signClass(m.sortino)} />
+      <MetricCard
+        label="Sortino"
+        value={m.sortino >= 999 ? "≥999 (no losing bars)" : num(m.sortino)}
+        cls={signClass(m.sortino)}
+      />
       <MetricCard label="Max drawdown" value={pct(m.maxDrawdown)} cls="neg" />
       <MetricCard label="Win rate" value={pct(m.winRate)} />
       <MetricCard

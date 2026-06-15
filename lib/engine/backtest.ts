@@ -80,7 +80,10 @@ function computeMetrics(
 
   const downside = barReturns.filter((r) => r < 0);
   const dsd = std(downside.length > 1 ? downside : [0, 0]);
-  const sortino = dsd > 0 ? (mu / dsd) * Math.sqrt(periodsPerYear) : 0;
+  // Cap Sortino at 999: when there are almost no losing bars, dsd → 0 causing
+  // division-by-near-zero that produces astronomical values (not meaningful).
+  const sortinoRaw = dsd > 1e-10 ? (mu / dsd) * Math.sqrt(periodsPerYear) : 999;
+  const sortino = Math.min(sortinoRaw, 999);
 
   // Equity curve from compounding bar returns → max drawdown.
   let equity = 1;
@@ -130,9 +133,11 @@ export function backtestPair(
     window: params.zscoreWindow,
   });
 
-  // Time-stop horizon from the spread's half-life (close after 2x half-life).
+  // Time-stop: close if position hasn't converged after 2x half-life.
+  // The Kalman spread adapts quickly so raw half-life can be < 1 bar —
+  // enforce a minimum of 5 bars so the strategy gets a fair chance to work.
   const hl = halfLife(spread);
-  const timeStopBars = Number.isFinite(hl) ? Math.ceil(2 * hl) : Infinity;
+  const timeStopBars = Number.isFinite(hl) ? Math.max(5, Math.ceil(2 * hl)) : Infinity;
 
   const costRate = 2 * (params.feePerLeg + params.slippage); // entry+exit, both legs
 
