@@ -81,7 +81,7 @@ export async function getBlacklist(): Promise<string[]> {
 /** Replace the stored pair set with a freshly discovered ranked list. */
 export async function savePairs(pairs: Pair[]): Promise<void> {
   const db = getServiceClient();
-  if (!db) return;
+  if (!db) throw new Error("SUPABASE_SERVICE_ROLE_KEY not configured — cannot save pairs");
   // Clear previous scan, then insert the new ranked set.
   await db.from("pairs").delete().neq("symbol_a", "__none__");
   if (pairs.length === 0) return;
