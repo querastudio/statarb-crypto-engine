@@ -1,0 +1,31 @@
+name: Pair Scan
+
+# Re-scans the universe every 6 hours to find fresh cointegrated pairs.
+# Vercel Hobby only allows 1 cron/day — this runs it more frequently for free.
+on:
+  schedule:
+    - cron: "0 */6 * * *"   # 00:00, 06:00, 12:00, 18:00 UTC
+  workflow_dispatch: # allows manual trigger from GitHub UI
+
+jobs:
+  run-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger pair scan
+        run: |
+          HTTP_STATUS=$(curl -s -o /tmp/response.json -w "%{http_code}" \
+            -X GET "${{ secrets.VERCEL_APP_URL }}/api/cron/scan" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json")
+
+          echo "HTTP status: $HTTP_STATUS"
+          echo "Response:"
+          cat /tmp/response.json
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "❌ Scan failed with status $HTTP_STATUS"
+            exit 1
+          fi
+
+          echo "✅ Scan OK"
