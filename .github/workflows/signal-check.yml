@@ -4,7 +4,7 @@ name: Signal Check
 # Vercel Hobby only allows 1 cron/day — this bypasses that limit for free.
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch: # allows manual trigger from GitHub UI
 
 jobs:

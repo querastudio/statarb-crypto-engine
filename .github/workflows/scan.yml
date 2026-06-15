@@ -4,7 +4,7 @@ name: Pair Scan
 # Vercel Hobby only allows 1 cron/day — this runs it more frequently for free.
 on:
   schedule:
-    - cron: "0 */6 * * *"   # 00:00, 06:00, 12:00, 18:00 UTC
+    - cron: "0 * * * *"   # setiap jam, selaras dengan candle 1H
   workflow_dispatch: # allows manual trigger from GitHub UI
 
 jobs:
