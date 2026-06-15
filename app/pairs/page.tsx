@@ -98,7 +98,7 @@ function QCell({ value, q }: { value: string; q: ReturnType<typeof adfQuality> }
   );
 }
 
-function LivePanel({ pair }: { pair: Pair }) {
+function LivePanel({ pair, onClose }: { pair: Pair; onClose?: () => void }) {
   const [sig, setSig] = useState<LiveSignal | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -126,6 +126,13 @@ function LivePanel({ pair }: { pair: Pair }) {
 
   return (
     <div style={{ padding: "8px 16px 20px" }}>
+      {onClose && (
+        <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 8 }}>
+          <button onClick={onClose} style={{ padding: "4px 12px", fontSize: 13 }}>
+            ✕ Tutup
+          </button>
+        </div>
+      )}
       <ZScoreGauge
         z={sig.zscore}
         thresholds={sig.thresholds}
@@ -201,7 +208,7 @@ export default function PairsPage() {
                 <th title="<0.5 = mean-reverting">Hurst</th>
                 <th title="Keeratan gerak bareng">Korelasi</th>
                 <th title="Rasio hedge B per 1 unit A">Beta</th>
-                <th>Aksi</th>
+                <th style={{ position: "sticky", right: 0, background: "var(--panel)" }}>Aksi</th>
               </tr>
             </thead>
             <tbody>
@@ -246,7 +253,7 @@ function Row({
         <QCell value={num(p.hurst, 2)} q={hurstQuality(p.hurst)} />
         <QCell value={num(p.correlation, 2)} q={corrQuality(p.correlation)} />
         <td>{num(p.beta, 4)}</td>
-        <td>
+        <td style={{ position: "sticky", right: 0, background: open ? "var(--panel-2)" : "var(--panel)" }}>
           <button onClick={onToggle} style={{ padding: "4px 12px", fontSize: 13 }}>
             {open ? "Tutup" : "Cek sinyal"}
           </button>
@@ -255,7 +262,7 @@ function Row({
       {open && (
         <tr>
           <td colSpan={9} style={{ padding: 0, background: "var(--panel-2)" }}>
-            <LivePanel pair={p} />
+            <LivePanel pair={p} onClose={onToggle} />
           </td>
         </tr>
       )}
