@@ -37,18 +37,12 @@ export async function fetchOHLCV(
   throw new Error(`All providers failed for ${symbol}: ${errors.join(" | ")}`);
 }
 
-// ── Universe discovery via Bybit spot tickers ─────────────────────────────────
+// ── Universe discovery via spot tickers (Bybit → OKX fallback) ───────────────
 
-/**
- * Return the top-N most liquid spot symbols quoted in the configured quote
- * asset, ranked by 24h turnover. Uses Bybit's public spot tickers endpoint —
- * no API key required, no geo-block from Vercel. Symbols are CCXT-unified
- * format (e.g. "BTC/USDT").
- */
-export async function getLiquidUniverse(limit = config.universeSize): Promise<string[]> {
-  const quote = config.quoteAsset;
+async function universeFromBybit(quote: string, limit: number): Promise<string[]> {
   const res = await fetch("https://api.bybit.com/v5/market/tickers?category=spot", {
-    signal: AbortSignal.timeout(15_000),
+    headers: { "User-Agent": "statarb-crypto-engine/1.0" },
+    signal: AbortSignal.timeout(12_000),
   });
   if (!res.ok) throw new Error(`Bybit tickers HTTP ${res.status}`);
   const json = (await res.json()) as {
@@ -56,20 +50,66 @@ export async function getLiquidUniverse(limit = config.universeSize): Promise<st
     result: { list: Array<{ symbol: string; turnover24h: string }> };
   };
   if (json.retCode !== 0) throw new Error(`Bybit tickers retCode ${json.retCode}`);
-
   const candidates: Array<{ symbol: string; turnover: number }> = [];
   for (const item of json.result.list) {
     if (!item.symbol.endsWith(quote)) continue;
     const base = item.symbol.slice(0, item.symbol.length - quote.length);
-    // Skip leveraged/inverse tokens
     if (/UP$|DOWN$|BULL$|BEAR$|[0-9]+[LS]$/.test(base)) continue;
     const turnover = parseFloat(item.turnover24h);
     if (!isFinite(turnover) || turnover <= 0) continue;
     candidates.push({ symbol: `${base}/${quote}`, turnover });
   }
-
   candidates.sort((a, b) => b.turnover - a.turnover);
   return candidates.slice(0, limit).map((c) => c.symbol);
+}
+
+async function universeFromOkx(quote: string, limit: number): Promise<string[]> {
+  const res = await fetch("https://www.okx.com/api/v5/market/tickers?instType=SPOT", {
+    headers: { "User-Agent": "statarb-crypto-engine/1.0" },
+    signal: AbortSignal.timeout(12_000),
+  });
+  if (!res.ok) throw new Error(`OKX tickers HTTP ${res.status}`);
+  const json = (await res.json()) as {
+    code: string;
+    data: Array<{ instId: string; volCcy24h: string }>;
+  };
+  if (json.code !== "0") throw new Error(`OKX tickers code ${json.code}`);
+  const suffix = `-${quote}`;
+  const candidates: Array<{ symbol: string; turnover: number }> = [];
+  for (const item of json.data) {
+    if (!item.instId.endsWith(suffix)) continue;
+    const base = item.instId.slice(0, item.instId.length - suffix.length);
+    if (/UP$|DOWN$|BULL$|BEAR$|[0-9]+[LS]$/.test(base)) continue;
+    const turnover = parseFloat(item.volCcy24h);
+    if (!isFinite(turnover) || turnover <= 0) continue;
+    candidates.push({ symbol: `${base}/${quote}`, turnover });
+  }
+  candidates.sort((a, b) => b.turnover - a.turnover);
+  return candidates.slice(0, limit).map((c) => c.symbol);
+}
+
+/**
+ * Return the top-N most liquid spot symbols quoted in the configured quote
+ * asset, ranked by 24h turnover. Tries Bybit then OKX — both public, no API
+ * key, neither geo-blocks Vercel's US servers (unlike Binance/Bybit which
+ * may return 403/451 depending on route). Symbols in CCXT unified format.
+ */
+export async function getLiquidUniverse(limit = config.universeSize): Promise<string[]> {
+  const quote = config.quoteAsset;
+  const errors: string[] = [];
+  for (const [name, fn] of [
+    ["Bybit", () => universeFromBybit(quote, limit)],
+    ["OKX", () => universeFromOkx(quote, limit)],
+  ] as const) {
+    try {
+      const symbols = await fn();
+      if (symbols.length > 0) return symbols;
+      errors.push(`${name}: 0 symbols`);
+    } catch (e) {
+      errors.push(`${name}: ${(e as Error).message}`);
+    }
+  }
+  throw new Error(`Universe fetch failed — ${errors.join(" | ")}`);
 }
 
 // ── Aligned price matrix ──────────────────────────────────────────────────────
