@@ -3,10 +3,28 @@
 
 import { config } from "@/lib/config";
 import { fetchAlignedCloses, getLiquidUniverse } from "@/lib/data/exchange";
-import { discoverPairs } from "./discovery";
+import {
+  discoverPairs,
+  collectCandidates,
+  finalizeFromCandidates,
+  closeLookup,
+  comboRangeForChunk,
+  totalCombos,
+} from "./discovery";
 // discoverPairs now returns DiscoveryResult (pairs + BH correction stats)
 import { generateSignal } from "./signals";
-import { getPairs, savePairs, saveSignals, getBlacklist, pairKey } from "@/lib/db/supabase";
+import {
+  getPairs,
+  savePairs,
+  saveSignals,
+  getBlacklist,
+  pairKey,
+  setScanSession,
+  getScanSession,
+  clearScanCandidates,
+  appendScanCandidates,
+  getScanCandidates,
+} from "@/lib/db/supabase";
 import { alertSignal, isAlertable } from "@/lib/alert/telegram";
 import type { Pair, Signal } from "@/lib/types";
 
@@ -60,6 +78,114 @@ export async function runScan(maxCombos?: number): Promise<ScanSummary> {
     alignedBars: matrix.timestamps.length,
     pairsFound: pairs.length,
     topPairs: pairs.slice(0, 20),
+    saved,
+    saveError,
+    candidatesBeforeBH: result.candidatesBeforeBH,
+    droppedByBH: result.droppedByBH,
+    bhThreshold: result.bhThreshold,
+  };
+}
+
+export interface ChunkScanSummary {
+  mode: "chunk";
+  chunk: number;
+  chunks: number;
+  universeSize: number;
+  combosTotal: number;
+  combosInChunk: number;
+  candidatesInChunk: number;
+  finalized: boolean;
+  // Present only on the finalizing (last) chunk:
+  pairsFound?: number;
+  saved?: boolean;
+  saveError?: string;
+  candidatesBeforeBH?: number;
+  droppedByBH?: number;
+  bhThreshold?: number;
+}
+
+/**
+ * Run one chunk of a chunked discovery scan.
+ *
+ * Chunk 0 pins the universe ordering and clears prior candidates. Every chunk
+ * fetches the (pinned) universe's aligned closes, evaluates its slice of the
+ * combination space, and appends candidates. The final chunk then runs
+ * Benjamini-Hochberg over the COMPLETE candidate set and saves ranked pairs.
+ *
+ * This keeps each invocation well under Vercel's 60s limit while preserving
+ * the statistical correctness of the FDR correction (which must see all
+ * p-values at once).
+ */
+export async function runScanChunk(chunk: number, chunks: number): Promise<ChunkScanSummary> {
+  if (!Number.isInteger(chunks) || chunks < 1) throw new Error("`chunks` must be >= 1");
+  if (!Number.isInteger(chunk) || chunk < 0 || chunk >= chunks) {
+    throw new Error(`\`chunk\` must be in [0, ${chunks - 1}]`);
+  }
+
+  // Determine the pinned symbol ordering for this scan session.
+  let symbols: string[];
+  if (chunk === 0) {
+    symbols = await getLiquidUniverse(config.universeSize);
+    await setScanSession(symbols);
+    await clearScanCandidates();
+  } else {
+    symbols = await getScanSession();
+    if (symbols.length === 0) {
+      throw new Error("No active scan session — run chunk 0 first");
+    }
+  }
+
+  // Fetch aligned closes for the pinned universe. Combo enumeration is based on
+  // the pinned `symbols` list (not the fetched set) so indices stay identical
+  // across chunks even if a symbol transiently fails to fetch.
+  const matrix = await fetchAlignedCloses(symbols, config.timeframe, SCAN_LOOKBACK);
+  const closeOf = closeLookup(matrix);
+
+  const range = comboRangeForChunk(symbols.length, chunk, chunks);
+  const { candidates, combosEvaluated } = collectCandidates(symbols, closeOf, range);
+  await appendScanCandidates(candidates);
+
+  const isLast = chunk === chunks - 1;
+  const summary: ChunkScanSummary = {
+    mode: "chunk",
+    chunk,
+    chunks,
+    universeSize: symbols.length,
+    combosTotal: totalCombos(symbols.length),
+    combosInChunk: combosEvaluated,
+    candidatesInChunk: candidates.length,
+    finalized: false,
+  };
+
+  if (!isLast) return summary;
+
+  // ── Final chunk: BH over ALL candidates, then save ranked pairs ───────────
+  const allCandidates = await getScanCandidates();
+  const result = finalizeFromCandidates(allCandidates, closeOf);
+
+  const blacklist = new Set(await getBlacklist());
+  const pairs = result.pairs.filter((p) => !blacklist.has(pairKey(p.symbol_a, p.symbol_b)));
+
+  let saved = false;
+  let saveError: string | undefined;
+  try {
+    await savePairs(pairs);
+    saved = true;
+  } catch (e) {
+    saveError = (e as Error).message;
+  }
+
+  // Clean up accumulated candidates so the next scan starts fresh.
+  try {
+    await clearScanCandidates();
+  } catch {
+    /* best-effort */
+  }
+
+  return {
+    ...summary,
+    finalized: true,
+    pairsFound: pairs.length,
     saved,
     saveError,
     candidatesBeforeBH: result.candidatesBeforeBH,

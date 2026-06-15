@@ -10,7 +10,7 @@
 // / no-op) so the app still boots for local exploration.
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { Pair, Signal, BacktestResult } from "@/lib/types";
+import type { Pair, Signal, BacktestResult, ScanCandidate } from "@/lib/types";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -130,6 +130,70 @@ export async function addToBlacklist(pairKey: string): Promise<void> {
   const db = getServiceClient();
   if (!db) return;
   await db.from("blacklist").upsert({ pair_key: pairKey, created_at: new Date().toISOString() });
+}
+
+// ── Chunked-scan state (service role) ─────────────────────────────────────────
+
+/** Pin the exact symbol ordering for a chunked scan session (single row, id=1). */
+export async function setScanSession(symbols: string[]): Promise<void> {
+  const db = getServiceClient();
+  if (!db) throw new Error("SUPABASE_SERVICE_ROLE_KEY not configured — cannot start scan session");
+  const { error } = await db
+    .from("scan_session")
+    .upsert({ id: 1, symbols, updated_at: new Date().toISOString() });
+  if (error) throw error;
+}
+
+/** Read the pinned symbol ordering for the current chunked scan session. */
+export async function getScanSession(): Promise<string[]> {
+  const db = getServiceClient() ?? getBrowserClient();
+  if (!db) return [];
+  const { data, error } = await db
+    .from("scan_session")
+    .select("symbols")
+    .eq("id", 1)
+    .maybeSingle();
+  if (error || !data) return [];
+  return ((data as { symbols: string[] }).symbols) ?? [];
+}
+
+/** Wipe accumulated candidates (called at the start of a fresh scan). */
+export async function clearScanCandidates(): Promise<void> {
+  const db = getServiceClient();
+  if (!db) return;
+  await db.from("scan_candidates").delete().neq("symbol_a", "__none__");
+}
+
+/** Append phase-1 candidates produced by one chunk. */
+export async function appendScanCandidates(candidates: ScanCandidate[]): Promise<void> {
+  const db = getServiceClient();
+  if (!db || candidates.length === 0) return;
+  const rows = candidates.map((c) => ({
+    symbol_a: c.symbol_a,
+    symbol_b: c.symbol_b,
+    corr: c.corr,
+    beta: c.beta,
+    alpha: c.alpha,
+    pvalue: c.pValue,
+  }));
+  const { error } = await db.from("scan_candidates").insert(rows);
+  if (error) throw error;
+}
+
+/** Read all accumulated candidates for the final BH pass. */
+export async function getScanCandidates(): Promise<ScanCandidate[]> {
+  const db = getServiceClient() ?? getBrowserClient();
+  if (!db) return [];
+  const { data, error } = await db.from("scan_candidates").select("*").limit(100000);
+  if (error) throw error;
+  return (data ?? []).map((r: Record<string, number | string>) => ({
+    symbol_a: r.symbol_a as string,
+    symbol_b: r.symbol_b as string,
+    corr: r.corr as number,
+    beta: r.beta as number,
+    alpha: r.alpha as number,
+    pValue: r.pvalue as number,
+  }));
 }
 
 export function pairKey(symbolA: string, symbolB: string): string {

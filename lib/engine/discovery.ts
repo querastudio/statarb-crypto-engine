@@ -11,7 +11,7 @@ import { config } from "@/lib/config";
 import { engleGranger, staticSpread } from "@/lib/stats/cointegration";
 import { halfLife } from "@/lib/stats/halflife";
 import { hurstExponent } from "@/lib/stats/hurst";
-import type { Pair } from "@/lib/types";
+import type { Pair, ScanCandidate } from "@/lib/types";
 import type { PriceMatrix } from "@/lib/data/exchange";
 
 /** Pearson correlation of two equal-length series. */
@@ -94,42 +94,53 @@ export interface DiscoveryResult {
   combosEvaluated: number;
 }
 
+/** A contiguous slice of the (i,j) combination enumeration. */
+export interface ComboRange {
+  /** Inclusive start combo index. */
+  start: number;
+  /** Exclusive end combo index. */
+  end: number;
+}
+
+/** Total number of unordered (i,j) combinations for n symbols. */
+export function totalCombos(n: number): number {
+  return n < 2 ? 0 : (n * (n - 1)) / 2;
+}
+
+/** Combo index range [start, end) belonging to chunk `k` of `chunks`. */
+export function comboRangeForChunk(n: number, chunk: number, chunks: number): ComboRange {
+  const total = totalCombos(n);
+  const start = Math.floor((chunk * total) / chunks);
+  const end = Math.floor(((chunk + 1) * total) / chunks);
+  return { start, end };
+}
+
 /**
- * Run discovery over a price matrix and return ranked, qualifying pairs.
+ * Phase 1 — collect raw candidates (correlation + Engle-Granger ADF) over the
+ * combinations of `symbols`, looking up each series via `closeOf`. Enumeration
+ * order is fixed (i<j) so combo indices are stable across chunk runs as long as
+ * the `symbols` ordering is identical.
  *
- * Two-phase approach:
- *   Phase 1 — collect all ADF p-values for correlated pairs (no early cutoff).
- *   Phase 2 — Benjamini-Hochberg FDR correction across ALL p-values at once,
- *             then apply the corrected threshold + half-life + Hurst filters.
+ * Pass `range` to only evaluate a contiguous slice of combos (chunked scan).
  */
-export function discoverPairs(
-  matrix: PriceMatrix,
-  options: DiscoveryOptions = {},
-): DiscoveryResult {
-  const { symbols, closes } = matrix;
+export function collectCandidates(
+  symbols: string[],
+  closeOf: (symbol: string) => number[] | undefined,
+  range?: ComboRange,
+): { candidates: ScanCandidate[]; combosEvaluated: number } {
   const n = symbols.length;
-  const maxCombos = options.maxCombos ?? Infinity;
-
-  // ── Phase 1: Gather ADF candidates ──────────────────────────────────────
-  interface Candidate {
-    i: number;
-    j: number;
-    corr: number;
-    beta: number;
-    intercept: number;
-    pValue: number;
-  }
-
-  const candidates: Candidate[] = [];
+  const candidates: ScanCandidate[] = [];
+  let comboIndex = -1;
   let combosEvaluated = 0;
 
-  outer: for (let i = 0; i < n; i++) {
+  for (let i = 0; i < n; i++) {
     for (let j = i + 1; j < n; j++) {
-      if (combosEvaluated >= maxCombos) break outer;
+      comboIndex++;
+      if (range && (comboIndex < range.start || comboIndex >= range.end)) continue;
       combosEvaluated++;
 
-      const a = closes[i];
-      const b = closes[j];
+      const a = closeOf(symbols[i]);
+      const b = closeOf(symbols[j]);
       if (!a || !b || a.length < 60) continue;
 
       // Correlation pre-filter (cheap — eliminates ~80% of pairs immediately).
@@ -145,10 +156,29 @@ export function discoverPairs(
         continue;
       }
 
-      candidates.push({ i, j, corr, beta: res.beta, intercept: res.alpha, pValue: res.pValue });
+      candidates.push({
+        symbol_a: symbols[i],
+        symbol_b: symbols[j],
+        corr,
+        beta: res.beta,
+        alpha: res.alpha,
+        pValue: res.pValue,
+      });
     }
   }
 
+  return { candidates, combosEvaluated };
+}
+
+/**
+ * Phase 2 + 3 — Benjamini-Hochberg FDR correction across ALL candidates at
+ * once, then apply the corrected threshold + half-life + Hurst filters and
+ * rank. `closeOf` provides the aligned series for half-life/Hurst computation.
+ */
+export function finalizeFromCandidates(
+  candidates: ScanCandidate[],
+  closeOf: (symbol: string) => number[] | undefined,
+): DiscoveryResult {
   // ── Phase 2: Benjamini-Hochberg FDR correction ───────────────────────────
   const bhThreshold = benjaminiHochberg(
     candidates.map((c) => c.pValue),
@@ -166,10 +196,11 @@ export function discoverPairs(
   for (const c of candidates) {
     if (c.pValue > bhThreshold) continue;
 
-    const a = closes[c.i];
-    const b = closes[c.j];
+    const a = closeOf(c.symbol_a);
+    const b = closeOf(c.symbol_b);
+    if (!a || !b) continue;
 
-    const spread = staticSpread(a, b, c.beta, c.intercept);
+    const spread = staticSpread(a, b, c.beta, c.alpha);
 
     const hl = halfLife(spread);
     if (!Number.isFinite(hl) || hl < config.halfLifeMinBars || hl > config.halfLifeMaxBars) {
@@ -180,10 +211,10 @@ export function discoverPairs(
     if (hurst >= config.hurstMax) continue;
 
     out.push({
-      symbol_a: symbols[c.i],
-      symbol_b: symbols[c.j],
+      symbol_a: c.symbol_a,
+      symbol_b: c.symbol_b,
       beta: c.beta,
-      alpha: c.intercept,
+      alpha: c.alpha,
       adf_pvalue: c.pValue,
       half_life: hl,
       hurst,
@@ -201,6 +232,35 @@ export function discoverPairs(
     candidatesBeforeBH: naivePass,
     droppedByBH,
     bhThreshold,
-    combosEvaluated,
+    combosEvaluated: candidates.length,
   };
+}
+
+/** Build a symbol→closes lookup from a price matrix. */
+export function closeLookup(matrix: PriceMatrix): (symbol: string) => number[] | undefined {
+  const idx = new Map(matrix.symbols.map((s, i) => [s, i] as const));
+  return (symbol: string) => {
+    const i = idx.get(symbol);
+    return i === undefined ? undefined : matrix.closes[i];
+  };
+}
+
+/**
+ * Run discovery over a price matrix and return ranked, qualifying pairs.
+ *
+ * Two-phase approach:
+ *   Phase 1 — collect all ADF p-values for correlated pairs (no early cutoff).
+ *   Phase 2 — Benjamini-Hochberg FDR correction across ALL p-values at once,
+ *             then apply the corrected threshold + half-life + Hurst filters.
+ */
+export function discoverPairs(
+  matrix: PriceMatrix,
+  options: DiscoveryOptions = {},
+): DiscoveryResult {
+  const closeOf = closeLookup(matrix);
+  const range =
+    options.maxCombos !== undefined ? { start: 0, end: options.maxCombos } : undefined;
+  const { candidates, combosEvaluated } = collectCandidates(matrix.symbols, closeOf, range);
+  const result = finalizeFromCandidates(candidates, closeOf);
+  return { ...result, combosEvaluated };
 }
