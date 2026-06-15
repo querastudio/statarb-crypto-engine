@@ -53,12 +53,23 @@ export async function POST(req: NextRequest) {
 
     const db = createClient(url, serviceKey, { auth: { persistSession: false } });
 
-    // Test connection.
+    // Test connection with a simple query that always works regardless of schema.
     const { error: connErr } = await db.from("pairs").select("count").limit(1).maybeSingle();
 
-    // connErr.code "42P01" = table does not exist → need to create.
-    // Any other error = bad credentials or unreachable.
-    if (connErr && connErr.code !== "42P01") {
+    // Supabase/PostgREST returns different error codes depending on the situation:
+    //   "42P01"    = PostgreSQL: table does not exist
+    //   "PGRST204" = PostgREST: table not found in schema cache (same root cause)
+    //   message containing "schema cache" = same issue
+    // All of these mean "table missing → need to create schema".
+    // Anything else (e.g., 401, JWT error) = bad credentials.
+    const tableNotFound =
+      !connErr ||
+      connErr.code === "42P01" ||
+      connErr.code === "PGRST204" ||
+      connErr.message?.toLowerCase().includes("schema cache") ||
+      connErr.message?.toLowerCase().includes("does not exist");
+
+    if (connErr && !tableNotFound) {
       return NextResponse.json(
         { error: `Connection failed: ${connErr.message}` },
         { status: 400 },
