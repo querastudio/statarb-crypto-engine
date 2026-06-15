@@ -92,6 +92,12 @@ export interface DiscoveryResult {
   bhThreshold: number;
   /** Total (i,j) combinations evaluated. */
   combosEvaluated: number;
+  /**
+   * True when BH yielded zero pairs and we fell back to the conventional α cut.
+   * These pairs are statistically plausible but NOT FDR-confirmed (lower
+   * confidence). Surface this to the user.
+   */
+  usedFallback: boolean;
 }
 
 /**
@@ -160,41 +166,57 @@ export function discoverPairs(
   const bhPass = candidates.filter((c) => c.pValue <= bhThreshold).length;
   const droppedByBH = Math.max(0, naivePass - bhPass);
 
-  // ── Phase 3: Apply BH threshold + half-life + Hurst ─────────────────────
-  const out: Pair[] = [];
+  // ── Phase 3: Apply threshold + half-life + Hurst, score and rank ─────────
+  const qualify = (threshold: number): Pair[] => {
+    const result: Pair[] = [];
+    for (const c of candidates) {
+      if (c.pValue > threshold) continue;
 
-  for (const c of candidates) {
-    if (c.pValue > bhThreshold) continue;
+      const a = closes[c.i];
+      const b = closes[c.j];
+      const spread = staticSpread(a, b, c.beta, c.intercept);
 
-    const a = closes[c.i];
-    const b = closes[c.j];
+      const hl = halfLife(spread);
+      if (!Number.isFinite(hl) || hl < config.halfLifeMinBars || hl > config.halfLifeMaxBars) {
+        continue;
+      }
 
-    const spread = staticSpread(a, b, c.beta, c.intercept);
+      const hurst = hurstExponent(spread);
+      if (hurst >= config.hurstMax) continue;
 
-    const hl = halfLife(spread);
-    if (!Number.isFinite(hl) || hl < config.halfLifeMinBars || hl > config.halfLifeMaxBars) {
-      continue;
+      result.push({
+        symbol_a: symbols[c.i],
+        symbol_b: symbols[c.j],
+        beta: c.beta,
+        alpha: c.intercept,
+        adf_pvalue: c.pValue,
+        half_life: hl,
+        hurst,
+        correlation: c.corr,
+        score: scorePair(c.pValue, hl, hurst),
+        cointegrated: true,
+        timeframe: config.timeframe,
+      });
     }
+    result.sort((x, y) => y.score - x.score);
+    return result;
+  };
 
-    const hurst = hurstExponent(spread);
-    if (hurst >= config.hurstMax) continue;
+  // Primary: BH-confirmed pairs (FDR-controlled, high confidence).
+  let out = qualify(bhThreshold);
+  let usedFallback = false;
 
-    out.push({
-      symbol_a: symbols[c.i],
-      symbol_b: symbols[c.j],
-      beta: c.beta,
-      alpha: c.intercept,
-      adf_pvalue: c.pValue,
-      half_life: hl,
-      hurst,
-      correlation: c.corr,
-      score: scorePair(c.pValue, hl, hurst),
-      cointegrated: true,
-      timeframe: config.timeframe,
-    });
+  // Fallback: a small universe makes BH very strict (few tests → tiny
+  // threshold), so genuinely-cointegrated pairs can all be swept away. If
+  // nothing survives, fall back to the conventional α cut so the user still
+  // sees plausible candidates — flagged as non-FDR-confirmed.
+  if (out.length === 0) {
+    const fb = qualify(config.adfPValueMax);
+    if (fb.length > 0) {
+      out = fb;
+      usedFallback = true;
+    }
   }
-
-  out.sort((x, y) => y.score - x.score);
 
   return {
     pairs: out,
@@ -202,5 +224,6 @@ export function discoverPairs(
     droppedByBH,
     bhThreshold,
     combosEvaluated,
+    usedFallback,
   };
 }

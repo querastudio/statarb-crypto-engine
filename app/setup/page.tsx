@@ -68,6 +68,12 @@ export default function SetupPage() {
         setScanResult(
           `⚠️ ${data.pairsFound} pair ditemukan tapi GAGAL disimpan. Error: ${data.saveError ?? "tidak diketahui"}`,
         );
+      } else if (data.usedFallback) {
+        setScanResult(
+          `✅ ${data.pairsFound} pair disimpan dari ${data.universeSize} simbol — ` +
+            `via filter standar (p≤0.05). Catatan: belum lolos koreksi Benjamini-Hochberg ` +
+            `(universe terlalu kecil), jadi confidence lebih rendah. Backtest dulu sebelum trading.`,
+        );
       } else {
         const bhInfo = data.droppedByBH > 0
           ? ` (${data.droppedByBH} pair dibuang koreksi BH, threshold p≤${Number(data.bhThreshold).toFixed(4)})`

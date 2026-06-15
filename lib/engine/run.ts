@@ -22,6 +22,8 @@ export interface ScanSummary {
   candidatesBeforeBH: number;
   droppedByBH: number;
   bhThreshold: number;
+  /** True when pairs come from the non-FDR fallback (BH yielded none). */
+  usedFallback: boolean;
 }
 
 // Use a shorter lookback for scan so each symbol fits in a single OKX page
@@ -65,6 +67,7 @@ export async function runScan(maxCombos?: number): Promise<ScanSummary> {
     candidatesBeforeBH: result.candidatesBeforeBH,
     droppedByBH: result.droppedByBH,
     bhThreshold: result.bhThreshold,
+    usedFallback: result.usedFallback,
   };
 }
 
