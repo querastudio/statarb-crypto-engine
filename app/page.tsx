@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import type { Signal, Pair } from "@/lib/types";
+import { analyzePortfolio, type PortfolioRisk } from "@/lib/engine/portfolio";
 import { num, sideBadgeClass, sideLabel, signClass } from "@/components/format";
 
 interface SignalsResponse {
@@ -27,6 +28,109 @@ function actionText(side: string, a: string, b: string): string {
     default:
       return "Tunggu";
   }
+}
+
+function PortfolioHealthCard({ risk }: { risk: PortfolioRisk }) {
+  const color =
+    risk.verdict === "SAFE"
+      ? "var(--green)"
+      : risk.verdict === "CAUTION"
+      ? "var(--amber)"
+      : "var(--red)";
+
+  const verdictLabel =
+    risk.verdict === "SAFE"
+      ? "🟢 AMAN"
+      : risk.verdict === "CAUTION"
+      ? "⚠️ WASPADA"
+      : "🔴 BERBAHAYA";
+
+  const utilPct = Math.min(1, risk.utilizationPct) * 100;
+  const longPct = risk.totalOpen > 0 ? (risk.longCount / risk.totalOpen) * 100 : 50;
+
+  return (
+    <div
+      className="card"
+      style={{ borderLeft: `4px solid ${color}` }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 16, color }}>{verdictLabel}</div>
+          <div style={{ fontSize: 13, color: "var(--muted)", marginTop: 2 }}>
+            Kesehatan portfolio — {risk.totalOpen} posisi terbuka dari {risk.maxPositions} maksimum
+          </div>
+        </div>
+      </div>
+
+      {/* Utilization bar */}
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>
+          <span>Kapasitas posisi</span>
+          <span>{risk.totalOpen}/{risk.maxPositions} ({Math.round(utilPct)}%)</span>
+        </div>
+        <div style={{ height: 8, borderRadius: 4, background: "var(--panel-2)", overflow: "hidden" }}>
+          <div
+            style={{
+              height: "100%",
+              width: `${utilPct}%`,
+              background: utilPct >= 100 ? "var(--red)" : utilPct >= 80 ? "var(--amber)" : "var(--green)",
+              borderRadius: 4,
+              transition: "width 0.3s",
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Long/Short balance bar */}
+      {risk.totalOpen > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--muted)", marginBottom: 4 }}>
+            <span style={{ color: "var(--green)" }}>▲ LONG: {risk.longCount}</span>
+            <span style={{ color: "var(--muted)" }}>Keseimbangan pasar</span>
+            <span style={{ color: "var(--red)" }}>SHORT: {risk.shortCount} ▼</span>
+          </div>
+          <div style={{ height: 8, borderRadius: 4, background: "rgba(239,83,80,0.3)", overflow: "hidden" }}>
+            <div
+              style={{
+                height: "100%",
+                width: `${longPct}%`,
+                background: "rgba(38,166,154,0.6)",
+                borderRadius: 4,
+              }}
+            />
+          </div>
+          <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 3, textAlign: "center" }}>
+            {risk.isNeutral ? "✓ Cukup netral (ideal: 50/50)" : "⚠ Tidak netral — risiko arah pasar"}
+          </div>
+        </div>
+      )}
+
+      {/* Warnings */}
+      {risk.warnings.length > 0 ? (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {risk.warnings.map((w, i) => (
+            <div
+              key={i}
+              style={{
+                fontSize: 13,
+                color: "var(--text)",
+                padding: "7px 10px",
+                background: "rgba(255,160,0,0.08)",
+                border: "1px solid rgba(255,160,0,0.25)",
+                borderRadius: 6,
+              }}
+            >
+              ⚠ {w}
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div style={{ fontSize: 13, color: "var(--muted)" }}>
+          ✓ Tidak ada peringatan — portfolio dalam kondisi baik
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function Dashboard() {
@@ -58,6 +162,8 @@ export default function Dashboard() {
   const active = Array.from(latestByPair.values()).filter(
     (s) => s.side === "LONG_SPREAD" || s.side === "SHORT_SPREAD",
   );
+
+  const portfolioRisk = analyzePortfolio(active, pairs, 10);
 
   return (
     <div className="container">
@@ -99,6 +205,14 @@ export default function Dashboard() {
         </div>
       </div>
 
+      {/* Portfolio Health */}
+      {!loading && active.length > 0 && (
+        <>
+          <h2 className="section-title">Kesehatan portfolio</h2>
+          <PortfolioHealthCard risk={portfolioRisk} />
+        </>
+      )}
+
       <h2 className="section-title">Sinyal aktif — peluang masuk sekarang</h2>
       {loading ? (
         <p className="muted">Memuat…</p>
@@ -106,7 +220,7 @@ export default function Dashboard() {
         <div className="notice">
           Belum ada peluang masuk dari sinyal tersimpan. Itu normal — sinyal hanya muncul saat
           z-score sebuah pair melewati ±2. Untuk cek kondisi terkini tiap pair secara langsung, buka{" "}
-          <Link href="/pairs">Pairs</Link> dan klik “Cek sinyal”.
+          <Link href="/pairs">Pairs</Link> dan klik "Cek sinyal".
         </div>
       ) : (
         <div className="card" style={{ padding: 0, overflowX: "auto" }}>
