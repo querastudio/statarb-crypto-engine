@@ -14,6 +14,21 @@ interface PairsResponse {
   pairs: Pair[];
 }
 
+function actionText(side: string, a: string, b: string): string {
+  switch (side) {
+    case "LONG_SPREAD":
+      return `Beli ${a}, jual ${b}`;
+    case "SHORT_SPREAD":
+      return `Jual ${a}, beli ${b}`;
+    case "CLOSE":
+      return "Tutup posisi (ambil untung)";
+    case "STOP":
+      return "Stop / cut loss";
+    default:
+      return "Tunggu";
+  }
+}
+
 export default function Dashboard() {
   const [signals, setSignals] = useState<Signal[]>([]);
   const [pairs, setPairs] = useState<Pair[]>([]);
@@ -47,70 +62,77 @@ export default function Dashboard() {
   return (
     <div className="container">
       <h1 style={{ marginTop: 0 }}>Dashboard</h1>
+      <p className="muted" style={{ marginTop: 0 }}>
+        Ringkasan mesin statistical arbitrage. Engine memindai pasangan koin yang bergerak bersamaan,
+        lalu memberi sinyal saat selisihnya melebar (peluang masuk) atau menyempit (waktunya keluar).
+      </p>
 
       {!configured && (
         <div className="notice">
-          Supabase is not configured yet, so there is no stored scan/signal data. Set{" "}
-          <code>NEXT_PUBLIC_SUPABASE_URL</code>, <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> and{" "}
-          <code>SUPABASE_SERVICE_ROLE_KEY</code>, run the SQL schema, then trigger{" "}
-          <code>/api/cron/scan</code>. You can still run ad-hoc backtests on the{" "}
-          <Link href="/backtest">Backtest</Link> page.
+          Supabase belum terkonfigurasi. Buka <Link href="/setup">Setup</Link> untuk menghubungkan
+          database dan menjalankan scan pertama.
         </div>
       )}
 
       <div className="grid cols-4">
         <div className="card">
-          <h3>Cointegrated pairs</h3>
+          <h3>Pasangan ditemukan</h3>
           <div className="stat">{pairs.length}</div>
+          <div className="muted" style={{ fontSize: 12 }}>lolos uji statistik</div>
         </div>
         <div className="card">
-          <h3>Open signals</h3>
+          <h3>Sinyal aktif</h3>
           <div className="stat">{active.length}</div>
+          <div className="muted" style={{ fontSize: 12 }}>peluang masuk sekarang</div>
         </div>
         <div className="card">
-          <h3>Signals (recent)</h3>
+          <h3>Total sinyal (riwayat)</h3>
           <div className="stat">{signals.length}</div>
+          <div className="muted" style={{ fontSize: 12 }}>termasuk tutup &amp; stop</div>
         </div>
         <div className="card">
-          <h3>Best score</h3>
+          <h3>Score terbaik</h3>
           <div className="stat">{pairs[0] ? num(pairs[0].score, 3) : "—"}</div>
+          <div className="muted" style={{ fontSize: 12 }}>
+            {pairs[0] ? `${pairs[0].symbol_a}/${pairs[0].symbol_b}` : "belum ada"}
+          </div>
         </div>
       </div>
 
-      <h2 className="section-title">Active signals</h2>
+      <h2 className="section-title">Sinyal aktif — peluang masuk sekarang</h2>
       {loading ? (
-        <p className="muted">Loading…</p>
+        <p className="muted">Memuat…</p>
       ) : active.length === 0 ? (
-        <p className="muted">No open spread positions right now.</p>
+        <div className="notice">
+          Belum ada peluang masuk dari sinyal tersimpan. Itu normal — sinyal hanya muncul saat
+          z-score sebuah pair melewati ±2. Untuk cek kondisi terkini tiap pair secara langsung, buka{" "}
+          <Link href="/pairs">Pairs</Link> dan klik “Cek sinyal”.
+        </div>
       ) : (
         <div className="card" style={{ padding: 0, overflowX: "auto" }}>
           <table>
             <thead>
               <tr>
-                <th>Pair</th>
-                <th>Side</th>
+                <th>Pasangan</th>
+                <th>Sinyal</th>
+                <th>Aksi yang disarankan</th>
                 <th>z-score</th>
-                <th>beta</th>
-                <th>spread</th>
-                <th>price A</th>
-                <th>price B</th>
-                <th>when</th>
+                <th>Beta</th>
+                <th>Waktu</th>
               </tr>
             </thead>
             <tbody>
               {active.map((s, i) => (
                 <tr key={i}>
-                  <td>
+                  <td style={{ fontWeight: 600 }}>
                     {s.symbol_a} / {s.symbol_b}
                   </td>
                   <td>
                     <span className={sideBadgeClass(s.side)}>{sideLabel(s.side)}</span>
                   </td>
+                  <td style={{ textAlign: "left" }}>{actionText(s.side, s.symbol_a, s.symbol_b)}</td>
                   <td className={signClass(s.zscore)}>{num(s.zscore)}</td>
                   <td>{num(s.beta, 4)}</td>
-                  <td>{num(s.spread, 4)}</td>
-                  <td>{num(s.price_a, 4)}</td>
-                  <td>{num(s.price_b, 4)}</td>
                   <td className="muted">
                     {s.created_at ? new Date(s.created_at).toLocaleString() : "—"}
                   </td>
@@ -121,30 +143,29 @@ export default function Dashboard() {
         </div>
       )}
 
-      <h2 className="section-title">Top pairs by score</h2>
+      <h2 className="section-title">Pasangan terbaik berdasarkan score</h2>
       {pairs.length === 0 ? (
         <p className="muted">
-          No pairs yet. Run a scan (<code>/api/cron/scan</code>) or see{" "}
-          <Link href="/pairs">Pairs</Link>.
+          Belum ada pair. Buka <Link href="/setup">Setup</Link> lalu jalankan scan.
         </p>
       ) : (
         <div className="card" style={{ padding: 0, overflowX: "auto" }}>
           <table>
             <thead>
               <tr>
-                <th>Pair</th>
-                <th>score</th>
+                <th>Pasangan</th>
+                <th>Score</th>
                 <th>ADF p</th>
-                <th>half-life</th>
+                <th>Half-life</th>
                 <th>Hurst</th>
-                <th>corr</th>
-                <th>beta</th>
+                <th>Korelasi</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {pairs.slice(0, 10).map((p, i) => (
                 <tr key={i}>
-                  <td>
+                  <td style={{ fontWeight: 600 }}>
                     {p.symbol_a} / {p.symbol_b}
                   </td>
                   <td>{num(p.score, 3)}</td>
@@ -152,7 +173,9 @@ export default function Dashboard() {
                   <td>{num(p.half_life, 1)}</td>
                   <td>{num(p.hurst, 2)}</td>
                   <td>{num(p.correlation, 2)}</td>
-                  <td>{num(p.beta, 4)}</td>
+                  <td>
+                    <Link href="/pairs">lihat →</Link>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -161,9 +184,9 @@ export default function Dashboard() {
       )}
 
       <p className="disclaimer">
-        ⚠️ Research &amp; education only. Statistical arbitrage carries real risk: cointegration can
-        break, fees and slippage erode thin edges, and backtests do not guarantee live results.
-        Paper-trade first and start small.
+        ⚠️ Hanya untuk riset &amp; edukasi. Statistical arbitrage punya risiko nyata: kointegrasi bisa
+        putus, biaya &amp; slippage menggerus margin tipis, dan hasil backtest tidak menjamin hasil live.
+        Paper-trade dulu dan mulai dengan modal kecil.
       </p>
     </div>
   );

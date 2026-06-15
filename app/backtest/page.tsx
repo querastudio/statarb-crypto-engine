@@ -7,11 +7,26 @@ import { EquityChart } from "@/components/EquityChart";
 import { ZScoreChart } from "@/components/ZScoreChart";
 import { num, pct, signClass } from "@/components/format";
 
-function MetricCard({ label, value, cls }: { label: string; value: string; cls?: string }) {
+function MetricCard({
+  label,
+  value,
+  cls,
+  help,
+}: {
+  label: string;
+  value: string;
+  cls?: string;
+  help?: string;
+}) {
   return (
-    <div className="card">
+    <div className="card" title={help}>
       <h3>{label}</h3>
       <div className={`stat small ${cls ?? ""}`}>{value}</div>
+      {help && (
+        <div className="muted" style={{ fontSize: 11, marginTop: 4, lineHeight: 1.4 }}>
+          {help}
+        </div>
+      )}
     </div>
   );
 }
@@ -19,21 +34,46 @@ function MetricCard({ label, value, cls }: { label: string; value: string; cls?:
 function MetricsGrid({ m }: { m: BacktestMetrics }) {
   return (
     <div className="grid cols-4">
-      <MetricCard label="Total return" value={pct(m.totalReturn)} cls={signClass(m.totalReturn)} />
-      <MetricCard label="Sharpe" value={num(m.sharpe)} cls={signClass(m.sharpe)} />
+      <MetricCard
+        label="Total return"
+        value={pct(m.totalReturn)}
+        cls={signClass(m.totalReturn)}
+        help="Total untung/rugi sepanjang periode setelah biaya."
+      />
+      <MetricCard
+        label="Sharpe"
+        value={num(m.sharpe)}
+        cls={signClass(m.sharpe)}
+        help="Untung per unit risiko. >1 bagus, >2 sangat bagus."
+      />
       <MetricCard
         label="Sortino"
-        value={m.sortino >= 999 ? "≥999 (no losing bars)" : num(m.sortino)}
+        value={m.sortino >= 999 ? "≥999 (tanpa bar rugi)" : num(m.sortino)}
         cls={signClass(m.sortino)}
+        help="Seperti Sharpe tapi hanya hitung volatilitas turun. Makin tinggi makin baik."
       />
-      <MetricCard label="Max drawdown" value={pct(m.maxDrawdown)} cls="neg" />
-      <MetricCard label="Win rate" value={pct(m.winRate)} />
+      <MetricCard
+        label="Max drawdown"
+        value={pct(m.maxDrawdown)}
+        cls="neg"
+        help="Penurunan terdalam dari puncak. Makin kecil makin aman."
+      />
+      <MetricCard label="Win rate" value={pct(m.winRate)} help="Persentase trade yang untung." />
       <MetricCard
         label="Profit factor"
         value={Number.isFinite(m.profitFactor) ? num(m.profitFactor) : "∞"}
+        help="Total untung ÷ total rugi. >1 artinya profitabel."
       />
-      <MetricCard label="Trades" value={String(m.totalTrades)} />
-      <MetricCard label="Avg duration" value={`${num(m.avgTradeDurationBars, 1)} bars`} />
+      <MetricCard
+        label="Trades"
+        value={String(m.totalTrades)}
+        help="Jumlah trade selesai (masuk lalu keluar)."
+      />
+      <MetricCard
+        label="Avg duration"
+        value={`${num(m.avgTradeDurationBars, 1)} bars`}
+        help="Rata-rata lama posisi (dalam bar/jam)."
+      />
     </div>
   );
 }
