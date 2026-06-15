@@ -1,59 +1,31 @@
 name: Pair Scan
 
-# Re-scans the universe every hour to find fresh cointegrated pairs.
+# Re-scans the universe every 6 hours to find fresh cointegrated pairs.
 # Vercel Hobby only allows 1 cron/day — this runs it more frequently for free.
-#
-# The scan runs in CHUNKS so a large universe (100+ coins) stays within Vercel's
-# 60s function limit. Chunk 0 pins the universe and resets state; each chunk
-# evaluates a slice of the pair combinations; the final chunk runs the
-# Benjamini-Hochberg correction over ALL candidates and saves the ranked pairs.
-#
-# Tune CHUNKS below: more chunks = less work per request (safer for big
-# universes), at the cost of a few extra HTTP calls. 1 = single-pass (old
-# behaviour). For ~50 coins, 1–2 is fine; for 100+ use 4; for 200+ use 6–8.
 on:
   schedule:
     - cron: "0 * * * *"   # setiap jam, selaras dengan candle 1H
   workflow_dispatch: # allows manual trigger from GitHub UI
-    inputs:
-      chunks:
-        description: "Jumlah chunk (1 = sekali jalan)"
-        required: false
-        default: "4"
 
 jobs:
   run-scan:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      CHUNKS: ${{ github.event.inputs.chunks || '4' }}
+    timeout-minutes: 5
     steps:
-      - name: Trigger chunked pair scan
+      - name: Trigger pair scan
         run: |
-          BASE="${{ secrets.VERCEL_APP_URL }}/api/cron/scan"
-          AUTH="Authorization: Bearer ${{ secrets.CRON_SECRET }}"
+          HTTP_STATUS=$(curl -s -o /tmp/response.json -w "%{http_code}" \
+            -X GET "${{ secrets.VERCEL_APP_URL }}/api/cron/scan" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json")
 
-          echo "Menjalankan scan dalam $CHUNKS chunk…"
-          for k in $(seq 0 $((CHUNKS - 1))); do
-            echo ""
-            echo "=== Chunk $k / $CHUNKS ==="
-            HTTP_STATUS=$(curl -s -o /tmp/response.json -w "%{http_code}" \
-              -X GET "$BASE?chunk=$k&chunks=$CHUNKS" \
-              -H "$AUTH" \
-              -H "Content-Type: application/json")
+          echo "HTTP status: $HTTP_STATUS"
+          echo "Response:"
+          cat /tmp/response.json
 
-            echo "HTTP status: $HTTP_STATUS"
-            cat /tmp/response.json
-            echo ""
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "❌ Scan failed with status $HTTP_STATUS"
+            exit 1
+          fi
 
-            if [ "$HTTP_STATUS" != "200" ]; then
-              echo "❌ Chunk $k gagal (status $HTTP_STATUS)"
-              exit 1
-            fi
-
-            # Small pause between chunks to stay friendly with exchange rate limits.
-            sleep 3
-          done
-
-          echo ""
-          echo "✅ Scan selesai ($CHUNKS chunk)"
+          echo "✅ Scan OK"

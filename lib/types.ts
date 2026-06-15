@@ -59,20 +59,6 @@ export interface Pair {
   updated_at?: string;
 }
 
-/**
- * A raw pair candidate captured in phase 1 of discovery (correlation + ADF),
- * before the Benjamini-Hochberg cutoff and half-life/Hurst filters. Persisted
- * across chunk runs so BH can run over the complete set on the final chunk.
- */
-export interface ScanCandidate {
-  symbol_a: string;
-  symbol_b: string;
-  corr: number;
-  beta: number;
-  alpha: number;
-  pValue: number;
-}
-
 export type SignalSide = "LONG_SPREAD" | "SHORT_SPREAD" | "CLOSE" | "STOP" | "FLAT";
 
 /** A live trading signal for a pair. */
