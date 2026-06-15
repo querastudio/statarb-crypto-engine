@@ -1,0 +1,122 @@
+name: Test Telegram
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Pilih aksi"
+        required: true
+        default: "get_chat_id"
+        type: choice
+        options:
+          - get_chat_id
+          - send_test_message
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Cek token valid
+        run: |
+          echo "=== Cek token bot ==="
+          RESULT=$(curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/getMe")
+          echo "$RESULT" | python3 -m json.tool 2>/dev/null || echo "$RESULT"
+
+          OK=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ok','false'))" 2>/dev/null)
+          if [ "$OK" != "True" ]; then
+            echo ""
+            echo "❌ TOKEN SALAH atau belum diset!"
+            echo "   Pastikan GitHub Secret TELEGRAM_BOT_TOKEN sudah diisi dengan token dari @BotFather"
+            exit 1
+          fi
+
+          USERNAME=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['result']['username'])" 2>/dev/null)
+          echo ""
+          echo "✅ Token valid! Bot username: @$USERNAME"
+
+      - name: Ambil Chat ID (get_chat_id)
+        if: ${{ github.event.inputs.action == 'get_chat_id' }}
+        run: |
+          echo ""
+          echo "=== Mencari Chat ID ==="
+          echo "Membaca pesan yang sudah masuk ke bot..."
+          echo ""
+
+          UPDATES=$(curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/getUpdates")
+
+          COUNT=$(echo "$UPDATES" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          print(len(d.get('result', [])))
+          " 2>/dev/null || echo "0")
+
+          if [ "$COUNT" = "0" ]; then
+            USERNAME=$(curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/getMe" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['result']['username'])" 2>/dev/null)
+            echo "⚠️  Bot belum pernah dikirim pesan."
+            echo ""
+            echo "Langkah yang harus dilakukan:"
+            echo "  1. Buka Telegram"
+            echo "  2. Cari @$USERNAME"
+            echo "  3. Tekan START atau kirim pesan 'halo'"
+            echo "  4. Kembali ke sini, klik Re-run job"
+          else
+            echo "Ditemukan $COUNT pesan. Chat ID yang bisa digunakan:"
+            echo ""
+            echo "$UPDATES" | python3 -c "
+          import sys, json
+          d = json.load(sys.stdin)
+          seen = set()
+          for u in d.get('result', []):
+              chat = (u.get('message') or u.get('channel_post') or {}).get('chat')
+              if not chat:
+                  continue
+              cid = chat['id']
+              if cid in seen:
+                  continue
+              seen.add(cid)
+              name = chat.get('title') or ' '.join(filter(None, [chat.get('first_name',''), chat.get('last_name','')])) or chat.get('username','')
+              ctype = chat.get('type','')
+              print(f'  Chat ID : {cid}')
+              print(f'  Nama    : {name}')
+              print(f'  Tipe    : {ctype}')
+              print()
+          "
+            echo "👆 Salin angka Chat ID di atas."
+            echo "   Isi sebagai GitHub Secret: TELEGRAM_CHAT_ID"
+            echo "   Isi juga di Vercel Environment Variables: TELEGRAM_CHAT_ID"
+          fi
+
+      - name: Kirim pesan test (send_test_message)
+        if: ${{ github.event.inputs.action == 'send_test_message' }}
+        run: |
+          echo "=== Kirim pesan test ke Chat ID: ${{ secrets.TELEGRAM_CHAT_ID }} ==="
+
+          if [ -z "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
+            echo "❌ TELEGRAM_CHAT_ID belum diset di GitHub Secrets!"
+            echo "   Jalankan dulu aksi 'get_chat_id' untuk mendapatkan Chat ID."
+            exit 1
+          fi
+
+          RESULT=$(curl -s -X POST \
+            "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "chat_id": "${{ secrets.TELEGRAM_CHAT_ID }}",
+              "text": "✅ Test berhasil!\n\nNotifikasi StatArb Engine sudah aktif.\nKamu akan dapat alert otomatis saat ada sinyal trading.",
+              "parse_mode": "Markdown"
+            }')
+
+          echo "$RESULT" | python3 -m json.tool 2>/dev/null || echo "$RESULT"
+
+          OK=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('ok','false'))" 2>/dev/null)
+          if [ "$OK" = "True" ]; then
+            echo ""
+            echo "✅ Pesan berhasil dikirim! Cek Telegram kamu."
+          else
+            ERR=$(echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('description','unknown error'))" 2>/dev/null)
+            echo ""
+            echo "❌ Gagal kirim pesan: $ERR"
+            if echo "$ERR" | grep -q "chat not found"; then
+              echo "   → Chat ID salah. Jalankan aksi 'get_chat_id' untuk mendapatkan ID yang benar."
+            fi
+          fi
