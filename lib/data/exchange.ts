@@ -1,27 +1,70 @@
-// Exchange data access via CCXT (public market data only — no API key needed).
+// Exchange data access.
 //
-// Provides: liquid-universe discovery (by quote volume) and aligned OHLCV
-// close-price matrices for a set of symbols.
+// For OHLCV price data we use the Binance public REST API directly via native
+// fetch() — no API key, no CCXT overhead, reliable in Vercel serverless.
+// CCXT is kept only for the universe scan (getLiquidUniverse) which needs
+// market metadata and runs less frequently on a cron.
 
 import ccxt, { type Exchange } from "ccxt";
 import { config } from "@/lib/config";
 import type { OHLCV } from "@/lib/types";
 
-let cached: Exchange | null = null;
+// ── Binance direct REST (primary, used for backtest & signal routes) ──────────
 
-/** Lazily construct (and cache) the configured CCXT exchange client. */
-export function getExchange(): Exchange {
-  if (cached) return cached;
-  const id = config.exchange as keyof typeof ccxt;
-  const ExchangeCtor = (ccxt as unknown as Record<string, new (cfg: object) => Exchange>)[
-    id as string
-  ];
+const BINANCE_BASE = "https://api.binance.com";
+
+/** Convert CCXT unified symbol "BTC/USDT" → Binance REST symbol "BTCUSDT". */
+function toBinanceSymbol(ccxtSymbol: string): string {
+  return ccxtSymbol.replace("/", "");
+}
+
+/**
+ * Fetch OHLCV from Binance public klines endpoint using native fetch().
+ * Timeframe must be a valid Binance interval string: 1m,5m,15m,1h,4h,1d …
+ */
+async function fetchOHLCVBinance(
+  symbol: string,
+  timeframe: string,
+  limit: number,
+): Promise<OHLCV[]> {
+  const bSymbol = toBinanceSymbol(symbol);
+  const url = `${BINANCE_BASE}/api/v3/klines?symbol=${bSymbol}&interval=${timeframe}&limit=${Math.min(limit, 1000)}`;
+  const res = await fetch(url, {
+    headers: { Accept: "application/json" },
+    // Bypass Next.js data cache — we always want fresh candles.
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`Binance ${res.status} for ${symbol}: ${body.slice(0, 200)}`);
+  }
+  const data = (await res.json()) as Array<[number, string, string, string, string, string, ...unknown[]]>;
+  return data.map((r) => ({
+    timestamp: Number(r[0]),
+    open: Number(r[1]),
+    high: Number(r[2]),
+    low: Number(r[3]),
+    close: Number(r[4]),
+    volume: Number(r[5]),
+  }));
+}
+
+// ── CCXT (used only for universe scan) ───────────────────────────────────────
+
+let cachedExchange: Exchange | null = null;
+
+function getExchange(): Exchange {
+  if (cachedExchange) return cachedExchange;
+  const id = config.exchange as string;
+  const ExchangeCtor = (ccxt as unknown as Record<string, new (cfg: object) => Exchange>)[id];
   if (!ExchangeCtor) {
     throw new Error(`Unknown exchange "${config.exchange}". Check EXCHANGE env var.`);
   }
-  cached = new ExchangeCtor({ enableRateLimit: true });
-  return cached;
+  cachedExchange = new ExchangeCtor({ enableRateLimit: true });
+  return cachedExchange;
 }
+
+// ── Public API ────────────────────────────────────────────────────────────────
 
 /**
  * Return the top-N most liquid spot symbols quoted in the configured quote
@@ -39,7 +82,6 @@ export async function getLiquidUniverse(limit = config.universeSize): Promise<st
     const market = ex.markets[symbol];
     if (!market || !market.spot || market.active === false) continue;
     if (market.quote !== quote) continue;
-    // Skip leveraged tokens / obvious derivatives encoded in the base.
     if (/UP$|DOWN$|BULL$|BEAR$|[0-9]+L$|[0-9]+S$/.test(market.base ?? "")) continue;
     const qv = (ticker as { quoteVolume?: number }).quoteVolume ?? 0;
     if (qv > 0) candidates.push({ symbol, quoteVolume: qv });
@@ -49,12 +91,16 @@ export async function getLiquidUniverse(limit = config.universeSize): Promise<st
   return candidates.slice(0, limit).map((c) => c.symbol);
 }
 
-/** Fetch raw OHLCV for a single symbol. */
+/** Fetch raw OHLCV for a single symbol (Binance direct → CCXT fallback). */
 export async function fetchOHLCV(
   symbol: string,
   timeframe = config.timeframe,
   limit = config.lookbackBars,
 ): Promise<OHLCV[]> {
+  if (config.exchange === "binance") {
+    return fetchOHLCVBinance(symbol, timeframe, limit);
+  }
+  // Non-Binance exchanges: use CCXT.
   const ex = getExchange();
   const raw = await ex.fetchOHLCV(symbol, timeframe, undefined, limit);
   return raw.map((r) => ({
@@ -75,9 +121,8 @@ export interface PriceMatrix {
 }
 
 /**
- * Fetch and time-align close prices for several symbols. All symbols are
- * fetched in parallel to stay within Vercel serverless time limits. Bars are
- * intersected on timestamp so every series is the same length and aligned.
+ * Fetch and time-align close prices for several symbols. All symbols fetched
+ * in parallel via native fetch → stays well within Vercel Hobby 10s timeout.
  * Symbols that fail to fetch are silently dropped.
  */
 export async function fetchAlignedCloses(
@@ -88,8 +133,6 @@ export async function fetchAlignedCloses(
   const perSymbol = new Map<string, Map<number, number>>();
   const valid: string[] = [];
 
-  // Fetch all symbols in parallel — critical for staying inside Vercel's 10s
-  // Hobby timeout when the caller passes 2–5 symbols.
   const results = await Promise.allSettled(
     symbols.map(async (symbol) => {
       const bars = await fetchOHLCV(symbol, timeframe, limit);
@@ -111,7 +154,6 @@ export async function fetchAlignedCloses(
     return { symbols: [], timestamps: [], closes: [] };
   }
 
-  // Intersect timestamps across all valid symbols.
   let common: number[] | null = null;
   for (const symbol of valid) {
     const ts = Array.from(perSymbol.get(symbol)!.keys());

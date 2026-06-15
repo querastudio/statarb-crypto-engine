@@ -30,12 +30,32 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "symbolA and symbolB are required" }, { status: 400 });
     }
 
+    // Fetch each symbol individually so we can surface per-symbol errors.
+    const fetchErrors: string[] = [];
+    const symbolResults = await Promise.allSettled(
+      [symbolA, symbolB].map(async (sym) => {
+        const { fetchOHLCV } = await import("@/lib/data/exchange");
+        const bars = await fetchOHLCV(sym, undefined, lookbackBars);
+        if (bars.length === 0) throw new Error(`No bars returned for ${sym}`);
+        return { sym, bars };
+      }),
+    );
+    for (const r of symbolResults) {
+      if (r.status === "rejected") fetchErrors.push(String(r.reason));
+    }
+    if (fetchErrors.length > 0) {
+      return NextResponse.json(
+        { error: `Data fetch failed: ${fetchErrors.join(" | ")}` },
+        { status: 422 },
+      );
+    }
+
     const matrix = await fetchAlignedCloses([symbolA, symbolB], undefined, lookbackBars);
 
     if (matrix.symbols.length < 2) {
       return NextResponse.json(
         {
-          error: `Could not fetch data for both symbols. Check symbol names (e.g. "ETH/USDT") and try again. Fetched: ${matrix.symbols.join(", ") || "none"}`,
+          error: `Could not align data for both symbols. Fetched: ${matrix.symbols.join(", ") || "none"}`,
         },
         { status: 422 },
       );
