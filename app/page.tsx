@@ -220,7 +220,7 @@ export default function Dashboard() {
         <div className="notice">
           Belum ada peluang masuk dari sinyal tersimpan. Itu normal — sinyal hanya muncul saat
           z-score sebuah pair melewati ±2. Untuk cek kondisi terkini tiap pair secara langsung, buka{" "}
-          <Link href="/pairs">Pairs</Link> dan klik "Cek sinyal".
+          <Link href="/pairs">Pairs</Link> dan klik &ldquo;Cek sinyal&rdquo;.
         </div>
       ) : (
         <div className="card" style={{ padding: 0, overflowX: "auto" }}>
