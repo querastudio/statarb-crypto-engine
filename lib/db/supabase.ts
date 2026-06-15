@@ -44,7 +44,8 @@ export function getServiceClient(): SupabaseClient | null {
 // ── Reads ────────────────────────────────────────────────────────────────────
 
 export async function getPairs(limit = 100): Promise<Pair[]> {
-  const db = getBrowserClient() ?? getServiceClient();
+  // Prefer service client so server-side reads bypass RLS even when no policy is set.
+  const db = getServiceClient() ?? getBrowserClient();
   if (!db) return [];
   const { data, error } = await db
     .from("pairs")
@@ -56,7 +57,7 @@ export async function getPairs(limit = 100): Promise<Pair[]> {
 }
 
 export async function getSignals(limit = 100): Promise<Signal[]> {
-  const db = getBrowserClient() ?? getServiceClient();
+  const db = getServiceClient() ?? getBrowserClient();
   if (!db) return [];
   const { data, error } = await db
     .from("signals")

@@ -47,19 +47,23 @@ export default function SetupPage() {
       const res = await fetch("/api/scan-now", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ serviceKey }),
+        body: JSON.stringify({ supabaseUrl: url, serviceKey }),
       });
       const data = await res.json();
       if (!res.ok || !data.ok) {
         setScanResult(`❌ ${data.error ?? "Scan gagal"}`);
+      } else if (data.pairsFound === 0) {
+        setScanResult(
+          `⚠️ Scan selesai tapi 0 pair ditemukan dari ${data.rawUniverseSize ?? data.universeSize} simbol. Coba lagi nanti.`,
+        );
+      } else if (!data.saved) {
+        setScanResult(
+          `⚠️ ${data.pairsFound} pair ditemukan tapi gagal disimpan ke Supabase. Pastikan SUPABASE_SERVICE_ROLE_KEY sudah di-set di Vercel dan sudah Redeploy.`,
+        );
       } else {
-        const parts = [
-          `Universe: ${data.rawUniverseSize ?? data.universeSize} simbol`,
-          `berhasil fetch: ${data.universeSize}`,
-          `${data.alignedBars} bars`,
-          `${data.pairsFound} pair ditemukan`,
-        ];
-        setScanResult(`✅ Scan selesai! ${parts.join(" · ")}`);
+        setScanResult(
+          `✅ ${data.pairsFound} pair disimpan ke Supabase dari ${data.rawUniverseSize ?? data.universeSize} simbol!`,
+        );
       }
     } catch (e) {
       setScanResult(`❌ ${(e as Error).message}`);
