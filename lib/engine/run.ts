@@ -16,6 +16,7 @@ export interface ScanSummary {
   pairsFound: number;
   topPairs: Pair[];
   saved: boolean;
+  saveError?: string;
 }
 
 // Use a shorter lookback for scan so each symbol fits in a single OKX page
@@ -38,11 +39,13 @@ export async function runScan(maxCombos?: number): Promise<ScanSummary> {
   );
 
   let saved = false;
+  let saveError: string | undefined;
   try {
     await savePairs(pairs);
     saved = true;
-  } catch {
+  } catch (e) {
     saved = false;
+    saveError = (e as Error).message;
   }
 
   return {
@@ -52,6 +55,7 @@ export async function runScan(maxCombos?: number): Promise<ScanSummary> {
     pairsFound: pairs.length,
     topPairs: pairs.slice(0, 20),
     saved,
+    saveError,
   };
 }
 

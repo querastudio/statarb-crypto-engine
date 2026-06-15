@@ -58,7 +58,7 @@ export default function SetupPage() {
         );
       } else if (!data.saved) {
         setScanResult(
-          `⚠️ ${data.pairsFound} pair ditemukan tapi gagal disimpan ke Supabase. Pastikan SUPABASE_SERVICE_ROLE_KEY sudah di-set di Vercel dan sudah Redeploy.`,
+          `⚠️ ${data.pairsFound} pair ditemukan tapi GAGAL disimpan. Error: ${data.saveError ?? "tidak diketahui"}`,
         );
       } else {
         setScanResult(

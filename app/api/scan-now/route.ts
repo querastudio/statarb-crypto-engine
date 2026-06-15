@@ -40,10 +40,13 @@ export async function POST(req: NextRequest) {
     // supplied in the request body — works during initial setup before redeploy.
     if (!summary.saved && summary.pairsFound > 0) {
       const dbUrl = supabaseUrl ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
-      if (dbUrl) {
+      if (!dbUrl) {
+        summary.saveError = "No Supabase URL (set NEXT_PUBLIC_SUPABASE_URL or send supabaseUrl)";
+      } else {
         try {
           const db = createClient(dbUrl, serviceKey, { auth: { persistSession: false } });
-          await db.from("pairs").delete().neq("symbol_a", "__none__");
+          const { error: delErr } = await db.from("pairs").delete().neq("symbol_a", "__none__");
+          if (delErr) throw new Error(`delete: ${delErr.message}`);
           const rows = (summary.topPairs as Pair[]).map((p) => ({
             symbol_a: p.symbol_a,
             symbol_b: p.symbol_b,
@@ -59,9 +62,11 @@ export async function POST(req: NextRequest) {
             updated_at: new Date().toISOString(),
           }));
           const { error } = await db.from("pairs").insert(rows);
-          if (!error) summary.saved = true;
-        } catch {
-          // best-effort; saved stays false
+          if (error) throw new Error(`insert: ${error.message}`);
+          summary.saved = true;
+          summary.saveError = undefined;
+        } catch (e) {
+          summary.saveError = (e as Error).message;
         }
       }
     }
