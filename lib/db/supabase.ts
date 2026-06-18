@@ -10,7 +10,7 @@
 // / no-op) so the app still boots for local exploration.
 
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { Pair, Signal, BacktestResult } from "@/lib/types";
+import type { Pair, Signal, BacktestResult, Position } from "@/lib/types";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -134,4 +134,80 @@ export async function addToBlacklist(pairKey: string): Promise<void> {
 
 export function pairKey(symbolA: string, symbolB: string): string {
   return `${symbolA}__${symbolB}`;
+}
+
+// ── Positions (auto-trader) ───────────────────────────────────────────────────
+
+/** All open positions for the given mode (paper/testnet/live kept separate). */
+export async function getOpenPositions(mode?: string): Promise<Position[]> {
+  const db = getServiceClient() ?? getBrowserClient();
+  if (!db) return [];
+  let q = db.from("positions").select("*").eq("status", "open");
+  if (mode) q = q.eq("mode", mode);
+  const { data, error } = await q.order("opened_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as Position[];
+}
+
+/** Recently closed positions (for dashboard history). */
+export async function getClosedPositions(limit = 50): Promise<Position[]> {
+  const db = getServiceClient() ?? getBrowserClient();
+  if (!db) return [];
+  const { data, error } = await db
+    .from("positions")
+    .select("*")
+    .eq("status", "closed")
+    .order("closed_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return (data ?? []) as Position[];
+}
+
+/** Insert a freshly opened position. Returns the stored row (with id). */
+export async function openPosition(pos: Position): Promise<Position> {
+  const db = getServiceClient();
+  if (!db) throw new Error("SUPABASE_SERVICE_ROLE_KEY not configured — cannot open position");
+  const { data, error } = await db
+    .from("positions")
+    .insert({
+      symbol_a: pos.symbol_a,
+      symbol_b: pos.symbol_b,
+      side: pos.side,
+      qty_a: pos.qty_a,
+      qty_b: pos.qty_b,
+      entry_price_a: pos.entry_price_a,
+      entry_price_b: pos.entry_price_b,
+      entry_z: pos.entry_z,
+      beta: pos.beta,
+      half_life: pos.half_life,
+      status: "open",
+      mode: pos.mode,
+      opened_at: new Date().toISOString(),
+    })
+    .select()
+    .single();
+  if (error) throw error;
+  return data as Position;
+}
+
+/** Mark a position closed with exit details. */
+export async function closePosition(
+  id: string,
+  exit: { exit_price_a: number; exit_price_b: number; exit_z: number; exit_reason: string; pnl: number },
+): Promise<void> {
+  const db = getServiceClient();
+  if (!db) throw new Error("SUPABASE_SERVICE_ROLE_KEY not configured — cannot close position");
+  const { error } = await db
+    .from("positions")
+    .update({
+      status: "closed",
+      closed_at: new Date().toISOString(),
+      exit_price_a: exit.exit_price_a,
+      exit_price_b: exit.exit_price_b,
+      exit_z: exit.exit_z,
+      exit_reason: exit.exit_reason,
+      pnl: exit.pnl,
+    })
+    .eq("id", id);
+  if (error) throw error;
 }

@@ -16,6 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <span className="brand">📈 StatArb Engine</span>
           <Link href="/">Dashboard</Link>
           <Link href="/pairs">Pairs</Link>
+          <Link href="/positions">Positions</Link>
           <Link href="/backtest">Backtest</Link>
           <Link href="/setup">Setup</Link>
           <span className="spacer" />

@@ -49,6 +49,31 @@ create table if not exists public.backtests (
   created_at    timestamptz not null default now()
 );
 
+-- ── Auto-trader positions (open & closed history) ────────────────────────────
+create table if not exists public.positions (
+  id            uuid primary key default gen_random_uuid(),
+  symbol_a      text not null,
+  symbol_b      text not null,
+  side          text not null,             -- LONG_SPREAD | SHORT_SPREAD
+  qty_a         double precision not null,
+  qty_b         double precision not null,
+  entry_price_a double precision not null,
+  entry_price_b double precision not null,
+  entry_z       double precision not null,
+  beta          double precision not null,
+  half_life     double precision not null,
+  status        text not null default 'open',  -- open | closed
+  mode          text not null,             -- paper | testnet | live
+  opened_at     timestamptz not null default now(),
+  closed_at     timestamptz,
+  exit_price_a  double precision,
+  exit_price_b  double precision,
+  exit_z        double precision,
+  exit_reason   text,
+  pnl           double precision
+);
+create index if not exists positions_status_idx on public.positions (status);
+
 -- ── Blacklisted pairs (cointegration broke) ──────────────────────────────────
 create table if not exists public.blacklist (
   pair_key   text primary key,
@@ -62,9 +87,13 @@ alter table public.pairs     enable row level security;
 alter table public.signals   enable row level security;
 alter table public.backtests enable row level security;
 alter table public.blacklist enable row level security;
+alter table public.positions enable row level security;
 
 do $$
 begin
+  if not exists (select 1 from pg_policies where tablename = 'positions' and policyname = 'public_read_positions') then
+    create policy public_read_positions on public.positions for select using (true);
+  end if;
   if not exists (select 1 from pg_policies where tablename = 'pairs' and policyname = 'public_read_pairs') then
     create policy public_read_pairs on public.pairs for select using (true);
   end if;

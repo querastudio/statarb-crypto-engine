@@ -1,0 +1,31 @@
+name: Auto-Trade Executor
+
+# Runs every 5 minutes and triggers the Bybit execution endpoint.
+# Does nothing unless TRADING_ENABLED=yes is set in Vercel (master kill switch).
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch: # manual trigger from the GitHub UI
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger executor
+        run: |
+          HTTP_STATUS=$(curl -s -o /tmp/response.json -w "%{http_code}" \
+            -X GET "${{ secrets.VERCEL_APP_URL }}/api/cron/execute" \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "Content-Type: application/json")
+
+          echo "HTTP status: $HTTP_STATUS"
+          echo "Response:"
+          cat /tmp/response.json
+
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "❌ Executor failed with status $HTTP_STATUS"
+            exit 1
+          fi
+
+          echo "✅ Executor OK"

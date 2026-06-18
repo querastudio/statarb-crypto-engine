@@ -46,6 +46,22 @@ export const config = {
 
   // Telegram
   telegramEnabled: str("TELEGRAM_ALERT", "no").toLowerCase() === "yes",
+
+  // ── Auto-trading (Bybit USDT Perpetuals) ───────────────────────────────────
+  // Master kill switch. Default OFF — must be explicitly enabled.
+  tradingEnabled: str("TRADING_ENABLED", "no").toLowerCase() === "yes",
+  // paper = log intended orders only (no API); testnet = real orders on Bybit
+  // testnet; live = real money. Default paper for safety.
+  tradingMode: str("TRADING_MODE", "paper").toLowerCase() as "paper" | "testnet" | "live",
+  // Equity used to size positions in paper mode (no real wallet to query).
+  paperEquity: num("PAPER_EQUITY", 1000),
+  // Leverage per leg. Kept low to bound liquidation risk (1 = no leverage).
+  leverage: num("TRADING_LEVERAGE", 1),
+  // Cap each trade's gross notional to this fraction of equity (both legs summed),
+  // so a tiny stop-distance can't blow sizing up into excessive leverage.
+  maxNotionalFraction: num("MAX_NOTIONAL_FRACTION", 0.5),
+  // Minimum order value (USDT) per leg; below this Bybit rejects the order.
+  minOrderNotional: num("MIN_ORDER_NOTIONAL", 5),
 } as const;
 
 export type AppConfig = typeof config;

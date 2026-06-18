@@ -178,6 +178,39 @@ export interface BacktestResult {
   kelly?: KellyResult | null;
 }
 
+/** Execution mode for the auto-trader. */
+export type TradingMode = "paper" | "testnet" | "live";
+
+/** An open or closed pair position held by the auto-trader. */
+export interface Position {
+  id?: string;
+  symbol_a: string;
+  symbol_b: string;
+  /** Spread side: LONG_SPREAD = long A / short B; SHORT_SPREAD = short A / long B. */
+  side: "LONG_SPREAD" | "SHORT_SPREAD";
+  /** Base-asset quantity traded on each leg (always positive). */
+  qty_a: number;
+  qty_b: number;
+  entry_price_a: number;
+  entry_price_b: number;
+  entry_z: number;
+  beta: number;
+  /** When the position was opened (unix ms, ISO string). */
+  opened_at?: string;
+  /** Half-life of the pair at entry, for the time-stop. */
+  half_life: number;
+  status: "open" | "closed";
+  /** Which engine mode opened it — guards against mixing paper & live rows. */
+  mode: TradingMode;
+  closed_at?: string;
+  exit_price_a?: number;
+  exit_price_b?: number;
+  exit_z?: number;
+  exit_reason?: string;
+  /** Realized net return on allocated capital (filled on close). */
+  pnl?: number;
+}
+
 export interface BacktestParams {
   zscoreWindow: number;
   entryThreshold: number;
