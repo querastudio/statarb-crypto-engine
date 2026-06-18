@@ -33,9 +33,14 @@ import {
   roundQty,
   setLeverage,
   placeMarketOrder,
+  placeMarketOrderConfirmed,
+  getOpenPerpPositions,
+  toBybitSymbol,
   type OrderSide,
+  type OrderFill,
+  type BybitPosition,
 } from "./bybit";
-import type { Pair, Position, TradingMode } from "@/lib/types";
+import type { Position, TradingMode } from "@/lib/types";
 
 const TIMEFRAME_MS: Record<string, number> = {
   "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
@@ -64,6 +69,8 @@ export interface ExecSummary {
   evaluated: number;
   /** The most-stretched pair right now (highest |z|), for at-a-glance health. */
   nearestEntry: { pair: string; z: number } | null;
+  /** Reconciliation / safety warnings raised this cycle (drift, partial fills). */
+  warnings: string[];
   actions: ExecAction[];
 }
 
@@ -94,6 +101,51 @@ function realizedPnl(p: Position, exitA: number, exitB: number): number {
   return pnlA + pnlB - fees;
 }
 
+/** Reverse of an order side, for flattening / rollback. */
+function reverse(side: OrderSide): OrderSide {
+  return side === "Buy" ? "Sell" : "Buy";
+}
+
+/**
+ * Open both legs atomically-ish. Leg A fills first; if leg B then fails, leg A
+ * is rolled back (reduce-only) so we never hold naked one-sided exposure — the
+ * single most dangerous failure mode in pairs trading. Throws if leg A can't be
+ * opened (no exposure created) or if rollback itself fails (manual fix needed).
+ */
+async function openLegsSafely(
+  symbolA: string, sideA: OrderSide, qtyA: number,
+  symbolB: string, sideB: OrderSide, qtyB: number,
+): Promise<{ fillA: OrderFill; fillB: OrderFill }> {
+  const fillA = await placeMarketOrderConfirmed({ symbol: symbolA, side: sideA, qty: qtyA });
+  try {
+    const fillB = await placeMarketOrderConfirmed({ symbol: symbolB, side: sideB, qty: qtyB });
+    return { fillA, fillB };
+  } catch (e) {
+    try {
+      await placeMarketOrder({
+        symbol: symbolA, side: reverse(sideA), qty: fillA.filledQty, reduceOnly: true,
+      });
+    } catch (rb) {
+      throw new Error(
+        `leg B failed (${(e as Error).message}) AND rollback of leg A FAILED ` +
+          `(${(rb as Error).message}) — NAKED ${symbolA} POSITION, MANUAL ACTION NEEDED`,
+      );
+    }
+    throw new Error(`leg B failed, leg A rolled back: ${(e as Error).message}`);
+  }
+}
+
+/** Close one leg reduce-only, returning the realized fill (null if it failed). */
+async function closeLegSafely(
+  symbol: string, exitSide: OrderSide, qty: number,
+): Promise<OrderFill | null> {
+  try {
+    return await placeMarketOrderConfirmed({ symbol, side: exitSide, qty, reduceOnly: true });
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Run one execution cycle. Pure orchestration — every external effect (orders,
  * DB writes, alerts) is guarded by the trading mode.
@@ -101,12 +153,13 @@ function realizedPnl(p: Position, exitA: number, exitB: number): number {
 export async function runExecutor(): Promise<ExecSummary> {
   const mode = config.tradingMode;
   const actions: ExecAction[] = [];
+  const warnings: string[] = [];
 
   let evaluated = 0;
   let nearestEntry: { pair: string; z: number } | null = null;
 
   if (!config.tradingEnabled) {
-    return { enabled: false, mode, equity: 0, openBefore: 0, opened: 0, closed: 0, evaluated, nearestEntry, actions };
+    return { enabled: false, mode, equity: 0, openBefore: 0, opened: 0, closed: 0, evaluated, nearestEntry, warnings, actions };
   }
 
   const pairs = (await getPairs(100)).filter((p) => p.cointegrated);
@@ -121,7 +174,7 @@ export async function runExecutor(): Promise<ExecSummary> {
     ]),
   );
   if (symbols.length === 0) {
-    return { enabled: true, mode, equity: 0, openBefore: 0, opened: 0, closed: 0, evaluated, nearestEntry, actions };
+    return { enabled: true, mode, equity: 0, openBefore: 0, opened: 0, closed: 0, evaluated, nearestEntry, warnings, actions };
   }
 
   const lookback = Math.max(config.zscoreWindow + 50, 200);
@@ -129,6 +182,21 @@ export async function runExecutor(): Promise<ExecSummary> {
   const idx = new Map(matrix.symbols.map((s, i) => [s, i] as const));
 
   const equity = mode === "paper" ? config.paperEquity : await getEquity();
+
+  // ── Reconcile DB ↔ exchange (live/testnet only) ─────────────────────────────
+  // The DB is our source of truth for *intent*; Bybit is the truth for *reality*.
+  // If they drift (executor crashed mid-cycle, a leg was liquidated, a manual
+  // close happened) we must not blindly send orders against a stale view.
+  const liveBySym = new Map<string, BybitPosition>();
+  if (mode !== "paper") {
+    try {
+      for (const p of await getOpenPerpPositions()) liveBySym.set(p.symbol, p);
+    } catch (e) {
+      warnings.push(`could not fetch exchange positions for reconciliation: ${(e as Error).message}`);
+    }
+  }
+  /** Live exchange size for a leg (0 if flat / unknown). */
+  const liveSize = (symbol: string): number => liveBySym.get(toBybitSymbol(symbol))?.size ?? 0;
 
   let opened = 0;
   let closed = 0;
@@ -164,17 +232,47 @@ export async function runExecutor(): Promise<ExecSummary> {
       continue;
     }
 
-    // Flatten both legs (reverse of entry, reduce-only).
+    // Flatten both legs (reverse of entry, reduce-only). Default exit prices to
+    // the latest close; overwrite with the real average fill when we have it.
     const entry = openSides(pos.side);
+    let exitPriceA = priceA;
+    let exitPriceB = priceB;
     try {
       if (mode !== "paper") {
-        await placeMarketOrder({ symbol: pos.symbol_a, side: entry.a === "Buy" ? "Sell" : "Buy", qty: pos.qty_a, reduceOnly: true });
-        await placeMarketOrder({ symbol: pos.symbol_b, side: entry.b === "Buy" ? "Sell" : "Buy", qty: pos.qty_b, reduceOnly: true });
+        const liveA = liveSize(pos.symbol_a);
+        const liveB = liveSize(pos.symbol_b);
+
+        if (liveA <= 0 && liveB <= 0) {
+          // Orphan: DB says open but the exchange is flat (manual close, a
+          // liquidation, or a crash before the DB write). Reconcile the row
+          // without sending any orders.
+          warnings.push(`${key}: orphan DB position (flat on exchange) — closing row, no orders sent`);
+        } else {
+          const fillA = liveA > 0 ? await closeLegSafely(pos.symbol_a, reverse(entry.a), pos.qty_a) : null;
+          const fillB = liveB > 0 ? await closeLegSafely(pos.symbol_b, reverse(entry.b), pos.qty_b) : null;
+
+          const failedLegs = [
+            liveA > 0 && !fillA ? "leg A" : null,
+            liveB > 0 && !fillB ? "leg B" : null,
+          ].filter(Boolean);
+          if (failedLegs.length > 0) {
+            // A leg that exists on the exchange could not be flattened. Leave the
+            // DB row OPEN so the next cycle retries; never mark it closed while
+            // real exposure remains.
+            const msg = `${key}: close FAILED on ${failedLegs.join(" & ")} — residual exposure, will retry next cycle`;
+            warnings.push(msg);
+            actions.push({ pair: key, action: "skip", reason: msg, z });
+            await sendTelegramMessage(`⚠️ *CLOSE FAILED* (${mode})\n${msg}`);
+            continue;
+          }
+          if (fillA?.avgPrice) exitPriceA = fillA.avgPrice;
+          if (fillB?.avgPrice) exitPriceB = fillB.avgPrice;
+        }
       }
-      const pnl = realizedPnl(pos, priceA, priceB);
+      const pnl = realizedPnl(pos, exitPriceA, exitPriceB);
       await closePosition(pos.id!, {
-        exit_price_a: priceA,
-        exit_price_b: priceB,
+        exit_price_a: exitPriceA,
+        exit_price_b: exitPriceB,
         exit_z: Number.isFinite(z) ? z : 0,
         exit_reason: reason,
         pnl,
@@ -280,22 +378,43 @@ export async function runExecutor(): Promise<ExecSummary> {
       continue;
     }
 
+    // Reconciliation guard: never stack onto a leg that already has live
+    // exposure on the exchange (an orphan position, or a leg shared with
+    // another pair). Stacking would break the hedge ratio and risk sizing.
+    if (mode !== "paper" && (liveSize(pair.symbol_a) > 0 || liveSize(pair.symbol_b) > 0)) {
+      const msg = `${key}: a leg already has live exchange exposure — skipping to avoid stacking`;
+      warnings.push(msg);
+      actions.push({ pair: key, action: "skip", reason: msg, z });
+      continue;
+    }
+
     const sides = openSides(side);
     try {
+      // Default to intended qty/price; overwrite with realized fills (live mode).
+      let fillQtyA = qtyA;
+      let fillQtyB = qtyB;
+      let entryPriceA = priceA;
+      let entryPriceB = priceB;
       if (mode !== "paper") {
         await setLeverage(pair.symbol_a, config.leverage);
         await setLeverage(pair.symbol_b, config.leverage);
-        await placeMarketOrder({ symbol: pair.symbol_a, side: sides.a, qty: qtyA });
-        await placeMarketOrder({ symbol: pair.symbol_b, side: sides.b, qty: qtyB });
+        const { fillA, fillB } = await openLegsSafely(
+          pair.symbol_a, sides.a, qtyA,
+          pair.symbol_b, sides.b, qtyB,
+        );
+        fillQtyA = fillA.filledQty;
+        fillQtyB = fillB.filledQty;
+        if (fillA.avgPrice) entryPriceA = fillA.avgPrice;
+        if (fillB.avgPrice) entryPriceB = fillB.avgPrice;
       }
       const stored: Position = {
         symbol_a: pair.symbol_a,
         symbol_b: pair.symbol_b,
         side,
-        qty_a: qtyA,
-        qty_b: qtyB,
-        entry_price_a: priceA,
-        entry_price_b: priceB,
+        qty_a: fillQtyA,
+        qty_b: fillQtyB,
+        entry_price_a: entryPriceA,
+        entry_price_b: entryPriceB,
         entry_z: z,
         beta: pair.beta,
         half_life: pair.half_life,
@@ -306,14 +425,19 @@ export async function runExecutor(): Promise<ExecSummary> {
       opened++;
       liveCount++;
       openKeys.add(key);
-      actions.push({ pair: key, action: "open", side, reason: "entry signal", qtyA, qtyB, z });
+      actions.push({ pair: key, action: "open", side, reason: "entry signal", qtyA: fillQtyA, qtyB: fillQtyB, z });
       await sendTelegramMessage(
         `🟢 *OPEN ${side}* \`${pair.symbol_a}\`/\`${pair.symbol_b}\` (${mode})\n` +
-          `z=${z.toFixed(2)}  qtyA=${qtyA}  qtyB=${qtyB}\n` +
-          `entryA=${priceA}  entryB=${priceB}`,
+          `z=${z.toFixed(2)}  qtyA=${fillQtyA}  qtyB=${fillQtyB}\n` +
+          `entryA=${entryPriceA}  entryB=${entryPriceB}`,
       );
     } catch (e) {
-      actions.push({ pair: key, action: "skip", reason: `open failed: ${(e as Error).message}`, z });
+      // openLegsSafely throws AFTER rolling leg A back, so no naked exposure
+      // remains here (unless rollback itself failed — its message says so).
+      const msg = `open failed: ${(e as Error).message}`;
+      warnings.push(`${key}: ${msg}`);
+      actions.push({ pair: key, action: "skip", reason: msg, z });
+      if (mode !== "paper") await sendTelegramMessage(`⚠️ *OPEN FAILED* (${mode})\n${key}: ${(e as Error).message}`);
     }
   }
 
@@ -326,6 +450,7 @@ export async function runExecutor(): Promise<ExecSummary> {
     closed,
     evaluated,
     nearestEntry,
+    warnings,
     actions,
   };
 }

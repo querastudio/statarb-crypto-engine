@@ -218,3 +218,113 @@ export async function placeMarketOrder(opts: {
     ...(opts.orderLinkId ? { orderLinkId: opts.orderLinkId } : {}),
   });
 }
+
+// ── Fill verification (signed) ────────────────────────────────────────────────
+
+/** Realized execution of an order: actual average price and filled quantity. */
+export interface OrderFill {
+  orderId: string;
+  /** Volume-weighted average fill price (0 if nothing filled). */
+  avgPrice: number;
+  /** Quantity actually filled (may be < requested on a partial fill). */
+  filledQty: number;
+  /** Bybit order status: New / PartiallyFilled / Filled / Rejected / Cancelled. */
+  status: string;
+}
+
+interface RawOrder {
+  orderId: string;
+  avgPrice?: string;
+  cumExecQty?: string;
+  orderStatus?: string;
+}
+
+/** Look an order up by id: realtime first (fresh), then history (settled). */
+async function fetchOrder(symbol: string, orderId: string): Promise<RawOrder | null> {
+  const sym = toBybitSymbol(symbol);
+  const params = { category: "linear", symbol: sym, orderId };
+  for (const path of ["/v5/order/realtime", "/v5/order/history"]) {
+    try {
+      const r = await signedGet<{ list: RawOrder[] }>(path, params);
+      const item = r.list?.find((o) => o.orderId === orderId) ?? r.list?.[0];
+      if (item) return item;
+    } catch {
+      // Try the next source.
+    }
+  }
+  return null;
+}
+
+/**
+ * Poll an order until it leaves a non-terminal state, returning the realized
+ * fill. Market orders settle near-instantly, but there's a small propagation
+ * delay before avgPrice/cumExecQty are populated — so we retry briefly.
+ */
+export async function confirmFill(
+  symbol: string,
+  orderId: string,
+  attempts = 6,
+  delayMs = 400,
+): Promise<OrderFill> {
+  let last: OrderFill = { orderId, avgPrice: 0, filledQty: 0, status: "Unknown" };
+  for (let i = 0; i < attempts; i++) {
+    const o = await fetchOrder(symbol, orderId);
+    if (o) {
+      last = {
+        orderId,
+        avgPrice: Number(o.avgPrice ?? "0") || 0,
+        filledQty: Number(o.cumExecQty ?? "0") || 0,
+        status: o.orderStatus ?? "Unknown",
+      };
+      const terminal = ["Filled", "Cancelled", "Rejected", "Deactivated"].includes(last.status);
+      if (terminal && last.filledQty > 0) return last;
+      if (last.status === "Rejected" || last.status === "Cancelled") return last;
+    }
+    if (i < attempts - 1) await new Promise((res) => setTimeout(res, delayMs));
+  }
+  return last;
+}
+
+/**
+ * Place a market order and confirm its realized fill. Throws if nothing filled
+ * (rejected / cancelled / zero-fill) so the caller can roll back the other leg.
+ */
+export async function placeMarketOrderConfirmed(opts: {
+  symbol: string;
+  side: OrderSide;
+  qty: number;
+  reduceOnly?: boolean;
+}): Promise<OrderFill> {
+  const { orderId } = await placeMarketOrder(opts);
+  const fill = await confirmFill(opts.symbol, orderId);
+  if (fill.filledQty <= 0) {
+    throw new Error(`order ${orderId} did not fill (status=${fill.status})`);
+  }
+  return fill;
+}
+
+// ── Open positions (signed) — for reconciliation ──────────────────────────────
+
+/** A live perpetual position on the account. */
+export interface BybitPosition {
+  symbol: string;
+  side: OrderSide | "None";
+  /** Absolute position size in base units (0 when flat). */
+  size: number;
+  avgPrice: number;
+}
+
+/** All open linear (USDT-settled) positions, keyed for reconciliation. */
+export async function getOpenPerpPositions(): Promise<BybitPosition[]> {
+  const result = await signedGet<{
+    list: Array<{ symbol: string; side: string; size: string; avgPrice: string }>;
+  }>("/v5/position/list", { category: "linear", settleCoin: "USDT" });
+  return (result.list ?? [])
+    .map((p) => ({
+      symbol: p.symbol,
+      side: (p.side === "Buy" || p.side === "Sell" ? p.side : "None") as OrderSide | "None",
+      size: Math.abs(Number(p.size) || 0),
+      avgPrice: Number(p.avgPrice) || 0,
+    }))
+    .filter((p) => p.size > 0);
+}
