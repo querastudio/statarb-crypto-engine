@@ -16,6 +16,7 @@
 import { config } from "@/lib/config";
 import { fetchAlignedCloses } from "@/lib/data/exchange";
 import { buildSpreadSeries } from "@/lib/engine/signals";
+import { detectRegime } from "@/lib/engine/regime";
 import { rollingStd } from "@/lib/stats/zscore";
 import { sizePosition } from "@/lib/risk/sizing";
 import {
@@ -213,6 +214,22 @@ export async function runExecutor(): Promise<ExecSummary> {
 
     // Entry only inside the band: beyond entry but not past the stop.
     if (az < config.entryThreshold || az > config.stopThreshold) continue;
+
+    // Regime guard: don't open into a dangerous regime (vol spike / trending /
+    // structural break). Existing positions are still managed above.
+    if (config.regimeFilterLive) {
+      const regime = detectRegime(spread, zscore);
+      if (regime.label === "DANGER") {
+        actions.push({
+          pair: key,
+          action: "skip",
+          reason: `regime DANGER — ${regime.warnings[0] ?? "skip new entry"}`,
+          z,
+        });
+        continue;
+      }
+    }
+
     const side: Position["side"] = z > 0 ? "SHORT_SPREAD" : "LONG_SPREAD";
 
     const priceA = matrix.closes[ia][matrix.closes[ia].length - 1];

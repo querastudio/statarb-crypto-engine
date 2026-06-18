@@ -62,6 +62,10 @@ export const config = {
   maxNotionalFraction: num("MAX_NOTIONAL_FRACTION", 0.5),
   // Minimum order value (USDT) per leg; below this Bybit rejects the order.
   minOrderNotional: num("MIN_ORDER_NOTIONAL", 5),
+  // Skip opening NEW positions when the regime detector flags DANGER (volatility
+  // expansion / trending spread / structural break). Existing positions are
+  // still managed normally. Default on — safety first.
+  regimeFilterLive: str("REGIME_FILTER_LIVE", "yes").toLowerCase() === "yes",
 } as const;
 
 export type AppConfig = typeof config;
