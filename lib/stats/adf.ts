@@ -15,12 +15,21 @@ import { ols } from "./ols";
 import type { ADFResult } from "@/lib/types";
 
 // Large-sample critical values, constant (no trend), MacKinnon (2010).
-const CRIT = { "1%": -3.43, "5%": -2.86, "10%": -2.57 } as const;
+//   "level"          → plain ADF on an observed series.
+//   "coint-residual" → ADF on the residual of a cointegrating regression
+//                      (Engle-Granger). Because the residual is ESTIMATED, the
+//                      null distribution is shifted left, so the correct cut-offs
+//                      are more negative. Using the level cut-offs here would
+//                      make the cointegration test far too liberal (it would
+//                      declare false pairs cointegrated). Values are the
+//                      MacKinnon Engle-Granger surface for 1 regressor (2 series).
+const CRIT_LEVEL = { "1%": -3.43, "5%": -2.86, "10%": -2.57 } as const;
+const CRIT_EG = { "1%": -3.9, "5%": -3.34, "10%": -3.04 } as const;
 
-// Quantile table of the ADF tau distribution (constant, no trend) used to
+// Quantile tables of the tau distribution (constant, no trend) used to
 // interpolate an approximate p-value from the test statistic.
 // Pairs of [tau, cumulative probability].
-const TAU_TABLE: Array<[number, number]> = [
+const TAU_TABLE_LEVEL: Array<[number, number]> = [
   [-4.5, 0.001],
   [-3.96, 0.005],
   [-3.43, 0.01],
@@ -39,9 +48,30 @@ const TAU_TABLE: Array<[number, number]> = [
   [1.0, 0.999],
 ];
 
-/** Interpolate an approximate p-value from the ADF tau statistic. */
-function mackinnonP(tau: number): number {
-  const table = TAU_TABLE;
+// Engle-Granger residual tau quantiles (1 regressor, constant). Approximate —
+// shifted ~0.5 more negative than the level table to reflect the estimated
+// residual. Suitable for ranking + FDR, not for exact inference.
+const TAU_TABLE_EG: Array<[number, number]> = [
+  [-4.95, 0.001],
+  [-4.45, 0.005],
+  [-3.9, 0.01],
+  [-3.59, 0.025],
+  [-3.34, 0.05],
+  [-3.04, 0.1],
+  [-2.76, 0.2],
+  [-2.45, 0.35],
+  [-2.14, 0.5],
+  [-1.75, 0.65],
+  [-1.36, 0.8],
+  [-0.97, 0.9],
+  [-0.6, 0.95],
+  [-0.3, 0.975],
+  [0.1, 0.99],
+  [0.5, 0.999],
+];
+
+/** Interpolate an approximate p-value from a tau statistic against a table. */
+function interpP(tau: number, table: Array<[number, number]>): number {
   if (tau <= table[0][0]) return table[0][1];
   if (tau >= table[table.length - 1][0]) return table[table.length - 1][1];
   for (let i = 0; i < table.length - 1; i++) {
@@ -74,6 +104,12 @@ function defaultMaxLag(n: number): number {
 export interface ADFOptions {
   /** Number of augmenting lags. If undefined, uses the default rule. */
   maxLag?: number;
+  /**
+   * "level" (default): plain ADF on an observed series.
+   * "coint-residual": ADF on an estimated cointegrating residual (Engle-Granger)
+   * — uses the stricter EG critical values & quantile table.
+   */
+  variant?: "level" | "coint-residual";
 }
 
 /**
@@ -107,14 +143,18 @@ export function adfTest(series: number[], options: ADFOptions = {}): ADFResult {
   const fit = ols(rows, resp);
   // Coefficient index 1 is γ (on the lagged level).
   const statistic = fit.tStats[1];
-  const pValue = mackinnonP(statistic);
+
+  const isEG = options.variant === "coint-residual";
+  const crit = isEG ? CRIT_EG : CRIT_LEVEL;
+  const table = isEG ? TAU_TABLE_EG : TAU_TABLE_LEVEL;
+  const pValue = interpP(statistic, table);
 
   return {
     statistic,
     pValue,
     usedLag: p,
     nobs: resp.length,
-    criticalValues: { ...CRIT },
-    stationary: statistic < CRIT["5%"],
+    criticalValues: { ...crit },
+    stationary: statistic < crit["5%"],
   };
 }
