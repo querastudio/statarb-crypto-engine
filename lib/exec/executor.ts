@@ -17,11 +17,14 @@ import { config } from "@/lib/config";
 import { fetchAlignedCloses } from "@/lib/data/exchange";
 import { buildSpreadSeries } from "@/lib/engine/signals";
 import { detectRegime } from "@/lib/engine/regime";
+import { backtestPair } from "@/lib/engine/backtest";
+import { engleGranger } from "@/lib/stats/cointegration";
 import { rollingStd } from "@/lib/stats/zscore";
 import { sizeLogSpreadPosition } from "@/lib/risk/sizing";
 import {
   getPairs,
   getOpenPositions,
+  getRealizedPnlSince,
   openPosition,
   closePosition,
   pairKey,
@@ -69,6 +72,10 @@ export interface ExecSummary {
   evaluated: number;
   /** The most-stretched pair right now (highest |z|), for at-a-glance health. */
   nearestEntry: { pair: string; z: number } | null;
+  /** Realized-today + open-unrealized PnL estimate (USDT) for the breaker. */
+  dayPnl: number;
+  /** True when the daily-loss circuit breaker blocked new entries this cycle. */
+  haltedDailyLoss: boolean;
   /** Reconciliation / safety warnings raised this cycle (drift, partial fills). */
   warnings: string[];
   actions: ExecAction[];
@@ -159,7 +166,7 @@ export async function runExecutor(): Promise<ExecSummary> {
   let nearestEntry: { pair: string; z: number } | null = null;
 
   if (!config.tradingEnabled) {
-    return { enabled: false, mode, equity: 0, openBefore: 0, opened: 0, closed: 0, evaluated, nearestEntry, warnings, actions };
+    return { enabled: false, mode, equity: 0, openBefore: 0, opened: 0, closed: 0, evaluated, nearestEntry, dayPnl: 0, haltedDailyLoss: false, warnings, actions };
   }
 
   const pairs = (await getPairs(100)).filter((p) => p.cointegrated);
@@ -174,7 +181,7 @@ export async function runExecutor(): Promise<ExecSummary> {
     ]),
   );
   if (symbols.length === 0) {
-    return { enabled: true, mode, equity: 0, openBefore: 0, opened: 0, closed: 0, evaluated, nearestEntry, warnings, actions };
+    return { enabled: true, mode, equity: 0, openBefore: 0, opened: 0, closed: 0, evaluated, nearestEntry, dayPnl: 0, haltedDailyLoss: false, warnings, actions };
   }
 
   const lookback = Math.max(config.zscoreWindow + 50, 200);
@@ -201,7 +208,21 @@ export async function runExecutor(): Promise<ExecSummary> {
   let opened = 0;
   let closed = 0;
 
-  // ── 1. Manage OPEN positions: close on exit / stop / time-stop ──────────────
+  // ── Daily-loss circuit breaker bookkeeping ──────────────────────────────────
+  // dayPnl = realized PnL since UTC midnight + PnL booked this cycle + current
+  // open (unrealized) PnL. If it breaches the limit we stop opening new risk.
+  const dayStart = new Date();
+  dayStart.setUTCHours(0, 0, 0, 0);
+  let realizedToday = 0;
+  try {
+    realizedToday = await getRealizedPnlSince(mode, dayStart.toISOString());
+  } catch (e) {
+    warnings.push(`could not read today's realized PnL: ${(e as Error).message}`);
+  }
+  let realizedThisCycle = 0;
+  let unrealizedPnl = 0;
+
+  // ── 1. Manage OPEN positions: close on break / exit / stop / time-stop ───────
   for (const pos of openPositions) {
     const ia = idx.get(pos.symbol_a);
     const ib = idx.get(pos.symbol_b);
@@ -222,12 +243,36 @@ export async function runExecutor(): Promise<ExecSummary> {
     const tfMs = TIMEFRAME_MS[config.timeframe] ?? 3_600_000;
     const barsHeld = pos.opened_at ? (Date.now() - new Date(pos.opened_at).getTime()) / tfMs : 0;
 
+    // Structural-break re-test: has the pair stopped cointegrating since entry?
+    // Run on the live log-price window; if it has broken, exit takes priority.
+    let breakP = NaN;
+    if (config.adfRetestLive) {
+      try {
+        breakP = engleGranger(
+          matrix.closes[ia].map((v) => Math.log(v)),
+          matrix.closes[ib].map((v) => Math.log(v)),
+        ).pValue;
+      } catch {
+        // Treat an un-computable re-test as "unknown" — don't force a close.
+      }
+    }
+
     let reason: string | null = null;
-    if (Number.isFinite(z) && Math.abs(z) > config.stopThreshold) reason = "stop (z beyond stop threshold)";
-    else if (Number.isFinite(z) && Math.abs(z) < config.exitThreshold) reason = "exit (mean reverted)";
-    else if (Number.isFinite(pos.half_life) && barsHeld > 2 * pos.half_life) reason = "time stop (>2× half-life)";
+    if (Number.isFinite(breakP) && breakP > config.adfPValueMax) {
+      reason = `structural break (cointegration p=${breakP.toFixed(3)} > ${config.adfPValueMax})`;
+    } else if (Number.isFinite(z) && Math.abs(z) > config.stopThreshold) {
+      reason = "stop (z beyond stop threshold)";
+    } else if (Number.isFinite(z) && Math.abs(z) < config.exitThreshold) {
+      reason = "exit (mean reverted)";
+    } else if (Number.isFinite(pos.half_life) && barsHeld > 2 * pos.half_life) {
+      reason = "time stop (>2× half-life)";
+    }
 
     if (!reason) {
+      // Held: contribute current mark-to-market to the daily-loss breaker.
+      if (Number.isFinite(priceA) && Number.isFinite(priceB)) {
+        unrealizedPnl += realizedPnl(pos, priceA, priceB);
+      }
       actions.push({ pair: key, action: "skip", reason: "holding", z });
       continue;
     }
@@ -278,6 +323,7 @@ export async function runExecutor(): Promise<ExecSummary> {
         pnl,
       });
       closed++;
+      realizedThisCycle += pnl;
       actions.push({ pair: key, action: "close", side: pos.side, reason, z });
       await sendTelegramMessage(
         `🔻 *CLOSE* \`${pos.symbol_a}\`/\`${pos.symbol_b}\` (${mode})\n${reason}\nz=${z.toFixed(2)}  PnL≈${pnl.toFixed(2)} USDT`,
@@ -287,9 +333,22 @@ export async function runExecutor(): Promise<ExecSummary> {
     }
   }
 
+  // ── Daily-loss circuit breaker decision ─────────────────────────────────────
+  const dayPnl = realizedToday + realizedThisCycle + unrealizedPnl;
+  const lossLimit = config.maxDailyLossFraction > 0 ? -config.maxDailyLossFraction * equity : -Infinity;
+  const haltedDailyLoss = dayPnl <= lossLimit;
+  if (haltedDailyLoss) {
+    const msg =
+      `daily-loss circuit breaker: dayPnl≈${dayPnl.toFixed(2)} ≤ ${lossLimit.toFixed(2)} USDT ` +
+      `(${(config.maxDailyLossFraction * 100).toFixed(1)}% of equity) — no new entries this cycle`;
+    warnings.push(msg);
+    await sendTelegramMessage(`🛑 *CIRCUIT BREAKER* (${mode})\n${msg}`);
+  }
+
   // ── 2. Open NEW positions on entry signals (respecting capacity) ────────────
   let liveCount = openPositions.length - closed;
   for (const pair of pairs) {
+    if (haltedDailyLoss) break;
     if (liveCount >= config.maxConcurrentPositions) break;
     const key = pairKey(pair.symbol_a, pair.symbol_b);
     if (openKeys.has(key)) continue; // already in a position
@@ -322,6 +381,22 @@ export async function runExecutor(): Promise<ExecSummary> {
           pair: key,
           action: "skip",
           reason: `regime DANGER — ${regime.warnings[0] ?? "skip new entry"}`,
+          z,
+        });
+        continue;
+      }
+    }
+
+    // Entry-quality gate: backtest this pair on the live window and require the
+    // strategy to be at least break-even recently. Blocks cointegrated-but-
+    // unprofitable pairs. Set MIN_ENTRY_SHARPE to a large negative to disable.
+    if (config.minEntrySharpe > -90) {
+      const bt = backtestPair(pair.symbol_a, pair.symbol_b, matrix.closes[ia], matrix.closes[ib]);
+      if (bt.metrics.sharpe < config.minEntrySharpe) {
+        actions.push({
+          pair: key,
+          action: "skip",
+          reason: `entry gate: recent Sharpe ${bt.metrics.sharpe.toFixed(2)} < ${config.minEntrySharpe} (${bt.metrics.totalTrades} trades)`,
           z,
         });
         continue;
@@ -450,6 +525,8 @@ export async function runExecutor(): Promise<ExecSummary> {
     closed,
     evaluated,
     nearestEntry,
+    dayPnl,
+    haltedDailyLoss,
     warnings,
     actions,
   };

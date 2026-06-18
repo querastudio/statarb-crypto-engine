@@ -66,6 +66,17 @@ export const config = {
   // expansion / trending spread / structural break). Existing positions are
   // still managed normally. Default on — safety first.
   regimeFilterLive: str("REGIME_FILTER_LIVE", "yes").toLowerCase() === "yes",
+  // Re-test cointegration on OPEN positions each cycle; close if the pair has
+  // structurally broken (current ADF p-value > adfPValueMax). Default on.
+  adfRetestLive: str("ADF_RETEST_LIVE", "yes").toLowerCase() === "yes",
+  // Quality gate for NEW entries: backtest the candidate on the live window and
+  // require net Sharpe ≥ this. Blocks pairs that have been losing recently.
+  // 0 = "must be non-negative". Set negative (e.g. -99) to disable the gate.
+  minEntrySharpe: num("MIN_ENTRY_SHARPE", 0),
+  // Daily-loss circuit breaker: when (realized today + open unrealized) ≤
+  // -maxDailyLossFraction × equity, stop opening NEW positions for the rest of
+  // the UTC day. Existing positions are still managed. 0 disables the breaker.
+  maxDailyLossFraction: num("MAX_DAILY_LOSS_FRACTION", 0.05),
 } as const;
 
 export type AppConfig = typeof config;

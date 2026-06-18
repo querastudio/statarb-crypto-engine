@@ -163,6 +163,23 @@ export async function getClosedPositions(limit = 50): Promise<Position[]> {
   return (data ?? []) as Position[];
 }
 
+/**
+ * Sum realized net PnL of positions closed at/after `sinceISO` for a mode.
+ * Used by the daily-loss circuit breaker. Returns 0 if DB is unavailable.
+ */
+export async function getRealizedPnlSince(mode: string, sinceISO: string): Promise<number> {
+  const db = getServiceClient() ?? getBrowserClient();
+  if (!db) return 0;
+  const { data, error } = await db
+    .from("positions")
+    .select("pnl")
+    .eq("status", "closed")
+    .eq("mode", mode)
+    .gte("closed_at", sinceISO);
+  if (error) throw error;
+  return (data ?? []).reduce((s, r: { pnl: number | null }) => s + (Number(r.pnl) || 0), 0);
+}
+
 /** Insert a freshly opened position. Returns the stored row (with id). */
 export async function openPosition(pos: Position): Promise<Position> {
   const db = getServiceClient();
