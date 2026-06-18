@@ -47,25 +47,43 @@ export interface SpreadSeriesResult {
 /**
  * Build the spread and z-score series for a pair. When `useKalman` is true the
  * hedge ratio adapts every bar; otherwise a static `beta`/`alpha` is used.
+ *
+ * `useLogPrices` (default true): analyse in log-price space. Crypto prices move
+ * multiplicatively, so cointegration and a constant hedge ratio are far more
+ * natural on logs — the spread becomes (return-space) and is scale-invariant.
+ * The resulting `beta` is the log-log hedge ratio and `spread` is the log
+ * spread. Pass false to analyse raw price levels (e.g. for linearly-constructed
+ * synthetic data).
  */
 export function buildSpreadSeries(
   priceA: number[],
   priceB: number[],
-  opts: { useKalman?: boolean; beta?: number; alpha?: number; window?: number } = {},
+  opts: {
+    useKalman?: boolean;
+    beta?: number;
+    alpha?: number;
+    window?: number;
+    useLogPrices?: boolean;
+  } = {},
 ): SpreadSeriesResult {
   const window = opts.window ?? defaultThresholds.zscoreWindow;
+
+  const useLog = opts.useLogPrices ?? true;
+  const a = useLog ? priceA.map((v) => Math.log(v)) : priceA;
+  const b = useLog ? priceB.map((v) => Math.log(v)) : priceB;
+
   let spread: number[];
   let betaSeries: number[];
 
   if (opts.useKalman ?? true) {
-    const kf = kalmanHedgeRatio(priceA, priceB);
+    const kf = kalmanHedgeRatio(a, b);
     spread = kf.spread;
     betaSeries = kf.beta;
   } else {
     const beta = opts.beta ?? 1;
     const alpha = opts.alpha ?? 0;
-    spread = staticSpread(priceA, priceB, beta, alpha);
-    betaSeries = new Array(priceA.length).fill(beta);
+    spread = staticSpread(a, b, beta, alpha);
+    betaSeries = new Array(a.length).fill(beta);
   }
 
   const zscore = rollingZScore(spread, window);

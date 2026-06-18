@@ -112,9 +112,15 @@ export function discoverPairs(
   matrix: PriceMatrix,
   options: DiscoveryOptions = {},
 ): DiscoveryResult {
-  const { symbols, closes } = matrix;
+  const { symbols, closes: rawCloses } = matrix;
   const n = symbols.length;
   const maxCombos = options.maxCombos ?? Infinity;
+
+  // Analyse in log-price space: crypto moves multiplicatively, so cointegration
+  // and a constant hedge ratio are more natural on logs. Discovery, half-life
+  // and Hurst all run on the log spread, matching the live signal engine
+  // (buildSpreadSeries defaults to log too). Stored beta/alpha are log-space.
+  const closes = rawCloses.map((s) => s.map((v) => Math.log(v)));
 
   // ── Phase 1: Gather ADF candidates ──────────────────────────────────────
   interface Candidate {

@@ -224,4 +224,6 @@ export interface BacktestParams {
   trainFraction: number;
   /** Skip new entries when regime detector signals DANGER. */
   useRegimeFilter: boolean;
+  /** Analyse in log-price space (default true). Matches discovery + live engine. */
+  useLogPrices: boolean;
 }

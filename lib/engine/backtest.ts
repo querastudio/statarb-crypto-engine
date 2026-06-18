@@ -30,6 +30,7 @@ const DEFAULT_PARAMS: BacktestParams = {
   useKalman: true,
   trainFraction: 0.7,
   useRegimeFilter: false,
+  useLogPrices: true,
 };
 
 /** Approximate number of bars per year for the configured timeframe. */
@@ -133,6 +134,7 @@ export function backtestPair(
   const { beta, spread, zscore } = buildSpreadSeries(priceA, priceB, {
     useKalman: params.useKalman,
     window: params.zscoreWindow,
+    useLogPrices: params.useLogPrices,
   });
 
   // Time-stop: close if position hasn't converged after 2x half-life.
@@ -203,7 +205,13 @@ export function backtestPair(
         if (position !== 0) {
           entryIndex = i;
           entrySpread = spread[i];
-          entryNotional = Math.abs(priceA[i]) + Math.abs(beta[i] * priceB[i]);
+          // PnL normalisation = capital deployed per unit of spread move.
+          // Log space: spread = logA − β·logB, so Δspread ≈ r_A − β·r_B and a
+          // dollar-weighted (1 : β) basket has return Δspread/(1+|β|); hence
+          // the per-spread notional is (1+|β|). Price space: |A| + |β·B|.
+          entryNotional = params.useLogPrices
+            ? 1 + Math.abs(beta[i])
+            : Math.abs(priceA[i]) + Math.abs(beta[i] * priceB[i]);
           if (entryNotional <= 0) entryNotional = 1;
           entryZ = z;
           // Pay entry cost immediately (half of round-trip).

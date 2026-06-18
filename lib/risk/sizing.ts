@@ -48,6 +48,44 @@ export function sizePosition(input: SizingInput): SizingResult {
   return { unitsA, unitsB, grossNotional, capitalAtRisk };
 }
 
+export interface LogSizingInput {
+  /** Current account equity (quote currency). */
+  equity: number;
+  /** Entry price of leg A. */
+  priceA: number;
+  /** Entry price of leg B. */
+  priceB: number;
+  /** Log-space hedge ratio (β in logA = α + β·logB). */
+  beta: number;
+  /** Distance (in LOG-spread units) from entry to the stop level. */
+  logSpreadStopDistance: number;
+  /** Fraction of equity to risk on this trade (default from config). */
+  riskPerTrade?: number;
+}
+
+/**
+ * Size a spread position when the spread is in LOG space (the live engine's
+ * default). The log spread moves like a return: Δspread ≈ r_A − β·r_B. A basket
+ * with notional N_A on A and N_B = |β|·N_A on B has P&L ≈ N_A · Δspread, so to
+ * lose ~riskPerTrade·equity over `logSpreadStopDistance`:
+ *
+ *   N_A = capitalAtRisk / logSpreadStopDistance,  unitsA = N_A / priceA
+ *   N_B = |β| · N_A,                              unitsB = N_B / priceB
+ */
+export function sizeLogSpreadPosition(input: LogSizingInput): SizingResult {
+  const risk = input.riskPerTrade ?? config.riskPerTrade;
+  const capitalAtRisk = input.equity * risk;
+  const d = Math.abs(input.logSpreadStopDistance);
+
+  const notionalA = d > 0 ? capitalAtRisk / d : 0;
+  const notionalB = notionalA * Math.abs(input.beta);
+  const unitsA = input.priceA > 0 ? notionalA / input.priceA : 0;
+  const unitsB = input.priceB > 0 ? notionalB / input.priceB : 0;
+  const grossNotional = notionalA + notionalB;
+
+  return { unitsA, unitsB, grossNotional, capitalAtRisk };
+}
+
 /** Whether a new position may be opened given current open count. */
 export function canOpenPosition(openPositions: number): boolean {
   return openPositions < config.maxConcurrentPositions;

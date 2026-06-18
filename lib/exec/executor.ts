@@ -18,7 +18,7 @@ import { fetchAlignedCloses } from "@/lib/data/exchange";
 import { buildSpreadSeries } from "@/lib/engine/signals";
 import { detectRegime } from "@/lib/engine/regime";
 import { rollingStd } from "@/lib/stats/zscore";
-import { sizePosition } from "@/lib/risk/sizing";
+import { sizeLogSpreadPosition } from "@/lib/risk/sizing";
 import {
   getPairs,
   getOpenPositions,
@@ -236,16 +236,17 @@ export async function runExecutor(): Promise<ExecSummary> {
     const priceB = matrix.closes[ib][matrix.closes[ib].length - 1];
 
     // Size so that a move from the entry band to the stop band loses ~risk.
+    // Spread (and pair.beta) are in log space, so use the log-aware sizer.
     const spreadStd = latestStd(spread, config.zscoreWindow);
     if (!Number.isFinite(spreadStd) || spreadStd <= 0) continue;
-    const spreadStopDistance = (config.stopThreshold - config.entryThreshold) * spreadStd;
+    const logSpreadStopDistance = (config.stopThreshold - config.entryThreshold) * spreadStd;
 
-    const sizing = sizePosition({
+    const sizing = sizeLogSpreadPosition({
       equity,
       priceA,
       priceB,
       beta: pair.beta,
-      spreadStopDistance,
+      logSpreadStopDistance,
     });
 
     // Cap gross notional → bounds effective leverage.
