@@ -59,6 +59,10 @@ export interface ExecSummary {
   openBefore: number;
   opened: number;
   closed: number;
+  /** How many candidate pairs were scanned for a new entry this cycle. */
+  evaluated: number;
+  /** The most-stretched pair right now (highest |z|), for at-a-glance health. */
+  nearestEntry: { pair: string; z: number } | null;
   actions: ExecAction[];
 }
 
@@ -97,8 +101,11 @@ export async function runExecutor(): Promise<ExecSummary> {
   const mode = config.tradingMode;
   const actions: ExecAction[] = [];
 
+  let evaluated = 0;
+  let nearestEntry: { pair: string; z: number } | null = null;
+
   if (!config.tradingEnabled) {
-    return { enabled: false, mode, equity: 0, openBefore: 0, opened: 0, closed: 0, actions };
+    return { enabled: false, mode, equity: 0, openBefore: 0, opened: 0, closed: 0, evaluated, nearestEntry, actions };
   }
 
   const pairs = (await getPairs(100)).filter((p) => p.cointegrated);
@@ -113,7 +120,7 @@ export async function runExecutor(): Promise<ExecSummary> {
     ]),
   );
   if (symbols.length === 0) {
-    return { enabled: true, mode, equity: 0, openBefore: 0, opened: 0, closed: 0, actions };
+    return { enabled: true, mode, equity: 0, openBefore: 0, opened: 0, closed: 0, evaluated, nearestEntry, actions };
   }
 
   const lookback = Math.max(config.zscoreWindow + 50, 200);
@@ -199,8 +206,12 @@ export async function runExecutor(): Promise<ExecSummary> {
     const z = zscore[zscore.length - 1];
     if (!Number.isFinite(z)) continue;
 
-    // Entry only inside the band: beyond entry but not past the stop.
+    // We have a usable z for this candidate — record it for observability.
+    evaluated++;
     const az = Math.abs(z);
+    if (!nearestEntry || az > Math.abs(nearestEntry.z)) nearestEntry = { pair: key, z };
+
+    // Entry only inside the band: beyond entry but not past the stop.
     if (az < config.entryThreshold || az > config.stopThreshold) continue;
     const side: Position["side"] = z > 0 ? "SHORT_SPREAD" : "LONG_SPREAD";
 
@@ -295,6 +306,8 @@ export async function runExecutor(): Promise<ExecSummary> {
     openBefore: openPositions.length,
     opened,
     closed,
+    evaluated,
+    nearestEntry,
     actions,
   };
 }
