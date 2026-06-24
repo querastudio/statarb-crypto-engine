@@ -6,9 +6,9 @@ import { fetchAlignedCloses, getLiquidUniverse } from "@/lib/data/exchange";
 import { discoverPairs } from "./discovery";
 // discoverPairs now returns DiscoveryResult (pairs + BH correction stats)
 import { generateSignal } from "./signals";
-import { getPairs, savePairs, saveSignals, getBlacklist, pairKey } from "@/lib/db/supabase";
-import { alertSignal, isAlertable } from "@/lib/alert/telegram";
-import type { Pair, Signal } from "@/lib/types";
+import { getPairs, savePairs, saveSignals, getSignals, getBlacklist, pairKey } from "@/lib/db/supabase";
+import { alertSignal } from "@/lib/alert/telegram";
+import type { Pair, Signal, SignalSide } from "@/lib/types";
 
 export interface ScanSummary {
   rawUniverseSize: number;
@@ -73,18 +73,52 @@ export async function runScan(maxCombos?: number): Promise<ScanSummary> {
 
 export interface SignalRunSummary {
   evaluated: number;
+  /** Only the meaningful state transitions (opens, closes, stops, flips). */
   signals: Signal[];
   alertsSent: number;
+  /** New entry signals (LONG/SHORT) this run. */
+  opened: number;
+  /** Exits (CLOSE/STOP) of previously-open pairs this run. */
+  closed: number;
+}
+
+/** Is this side an open spread position (vs flat)? */
+function inPosition(side?: SignalSide): boolean {
+  return side === "LONG_SPREAD" || side === "SHORT_SPREAD";
 }
 
 /**
- * Evaluate signals for the currently stored pairs and persist/alert on any
- * actionable (entry/exit/stop) transitions.
+ * Evaluate signals for the currently stored pairs and alert ONLY on meaningful
+ * state transitions — not on every bar.
+ *
+ * The classifier is stateless (any pair sitting near z≈0 maps to CLOSE), which
+ * otherwise floods Telegram with "CLOSE" for pairs that were never open. We
+ * derive each pair's prior state from the most recent persisted signal and
+ * alert only when it actually changes:
+ *
+ *   flat → LONG/SHORT          : OPEN alert
+ *   LONG/SHORT → CLOSE         : CLOSE alert (mean reverted)
+ *   LONG/SHORT → STOP          : STOP alert (likely structural break)
+ *   LONG ↔ SHORT               : FLIP alert (reverse)
+ *   everything else (no change): silent, nothing persisted
+ *
+ * Persisting the transition makes it the new prior state for the next run, so
+ * the `signals` table doubles as the state store (no schema change needed).
  */
 export async function runSignals(limitPairs = config.maxConcurrentPositions * 3): Promise<SignalRunSummary> {
   const pairs = (await getPairs(limitPairs)).filter((p) => p.cointegrated);
-  const signals: Signal[] = [];
+
+  // Prior state per pair = most-recently persisted signal side (desc by time).
+  const priorSide = new Map<string, SignalSide>();
+  for (const s of await getSignals(500)) {
+    const k = pairKey(s.symbol_a, s.symbol_b);
+    if (!priorSide.has(k)) priorSide.set(k, s.side);
+  }
+
+  const transitions: Signal[] = [];
   let alertsSent = 0;
+  let opened = 0;
+  let closed = 0;
 
   // Batch-fetch the unique symbols we need.
   const symbols = Array.from(new Set(pairs.flatMap((p) => [p.symbol_a, p.symbol_b])));
@@ -97,19 +131,40 @@ export async function runSignals(limitPairs = config.maxConcurrentPositions * 3)
     if (ia === undefined || ib === undefined) continue;
     const sig = generateSignal(p.symbol_a, p.symbol_b, matrix.closes[ia], matrix.closes[ib]);
     if (!sig) continue;
-    signals.push(sig);
-    if (isAlertable(sig.side)) {
-      const ok = await alertSignal(sig);
-      if (ok) alertsSent++;
+
+    const prev = priorSide.get(pairKey(p.symbol_a, p.symbol_b));
+    const cur = sig.side;
+
+    // Decide whether this is a real transition worth alerting on.
+    let isOpen = false;
+    let isExit = false;
+    if (!inPosition(prev)) {
+      // Currently flat: only a fresh entry matters. STOP/CLOSE while flat = noise.
+      if (cur === "LONG_SPREAD" || cur === "SHORT_SPREAD") isOpen = true;
+    } else {
+      // Currently in a position: an exit, a stop, or a reversal matters.
+      if (cur === "CLOSE" || cur === "STOP") isExit = true;
+      else if (inPosition(cur) && cur !== prev) isOpen = true; // flip = new entry
     }
+    if (!isOpen && !isExit) continue; // no state change → stay silent
+
+    if (isExit) {
+      sig.note = `closing ${prev} — ${cur === "STOP" ? "z beyond stop (possible break)" : "mean reverted"}`;
+      closed++;
+    } else {
+      opened++;
+    }
+
+    transitions.push(sig);
+    const ok = await alertSignal(sig);
+    if (ok) alertsSent++;
   }
 
-  const actionable = signals.filter((s) => isAlertable(s.side));
   try {
-    await saveSignals(actionable);
+    await saveSignals(transitions);
   } catch {
-    // best-effort persistence
+    // best-effort persistence (also the state store for the next run)
   }
 
-  return { evaluated: pairs.length, signals, alertsSent };
+  return { evaluated: pairs.length, signals: transitions, alertsSent, opened, closed };
 }
